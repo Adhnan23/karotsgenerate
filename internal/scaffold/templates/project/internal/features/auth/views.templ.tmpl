@@ -1,0 +1,60 @@
+package auth
+
+// Views are colocated in the feature package (rather than a sub-package) so they can
+// use the feature's own types without import cycles. They render inside the shared
+// Base layout. LoginForm / RegisterForm are separate components so a failed submit
+// can re-render just the form (with an error) via an htmx swap.
+
+import "[[.ModulePath]]/internal/shared/layout"
+
+templ LoginPage(csrf, email, errMsg string) {
+	@layout.Base("Log in", "", csrf) {
+		<h1>Log in</h1>
+		@LoginForm(csrf, email, errMsg)
+		<p class="muted">No account? <a href="/register">Register</a></p>
+	}
+}
+
+templ LoginForm(csrf, email, errMsg string) {
+	<form id="auth-form" hx-post="/login" hx-target="#auth-form" hx-swap="outerHTML">
+		if errMsg != "" {
+			<p class="error" role="alert">{ errMsg }</p>
+		}
+		<input type="hidden" name="_csrf" value={ csrf }/>
+		<label>
+			Email
+			<input type="email" name="email" value={ email } required autofocus/>
+		</label>
+		<label>
+			Password
+			<input type="password" name="password" required/>
+		</label>
+		<button type="submit">Log in</button>
+	</form>
+}
+
+templ RegisterPage(csrf, email, errMsg string) {
+	@layout.Base("Register", "", csrf) {
+		<h1>Create an account</h1>
+		@RegisterForm(csrf, email, errMsg)
+		<p class="muted">Already have an account? <a href="/login">Log in</a></p>
+	}
+}
+
+templ RegisterForm(csrf, email, errMsg string) {
+	<form id="auth-form" hx-post="/register" hx-target="#auth-form" hx-swap="outerHTML">
+		if errMsg != "" {
+			<p class="error" role="alert">{ errMsg }</p>
+		}
+		<input type="hidden" name="_csrf" value={ csrf }/>
+		<label>
+			Email
+			<input type="email" name="email" value={ email } required autofocus/>
+		</label>
+		<label>
+			Password (min 8 characters)
+			<input type="password" name="password" minlength="8" required/>
+		</label>
+		<button type="submit">Register</button>
+	</form>
+}

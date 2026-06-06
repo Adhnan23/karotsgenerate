@@ -1,0 +1,135 @@
+//go:build integration
+
+package note
+
+// Integration tests run the REAL sqlx queries against a REAL Postgres (TEST_DATABASE_URL,
+// started by `make db-up`). They're behind the `integration` build tag so the default
+// `make test` stays fast and DB-free. Run with: make test-integration
+//
+// Why both these and the unit tests? A mock can't catch what only real SQL reveals:
+// constraint violations, RETURNING behavior, NULL handling, ordering, FK cascades.
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/jmoiron/sqlx"
+
+	"[[.ModulePath]]/internal/platform/database"
+)
+
+// setupDB connects to the test database, applies migrations, truncates the tables,
+// and inserts one user to satisfy the notes.user_id foreign key. It returns the db
+// and that user's id. The test is skipped if TEST_DATABASE_URL isn't set.
+func setupDB(t *testing.T) (*sqlx.DB, int64) {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping integration tests (run `make db-up`)")
+	}
+
+	ctx := context.Background()
+	db, err := database.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := database.Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// Clean slate. CASCADE clears notes + refresh_tokens that reference users.
+	db.MustExec(`TRUNCATE users, notes, refresh_tokens RESTART IDENTITY CASCADE`)
+
+	var userID int64
+	if err := db.Get(&userID,
+		`INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id`,
+		"it@example.com", "x"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	return db, userID
+}
+
+func TestRepository_CreateAndGet(t *testing.T) {
+	db, userID := setupDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	created, err := repo.Create(ctx, userID, "Title", "Body")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.ID == 0 || created.CreatedAt.IsZero() {
+		t.Fatalf("expected RETURNING to populate id + created_at, got %+v", created)
+	}
+
+	got, err := repo.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "Title" || got.UserID != userID {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func TestRepository_ListPaginationAndCount(t *testing.T) {
+	db, userID := setupDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	for i := 0; i < 15; i++ {
+		if _, err := repo.Create(ctx, userID, "n", ""); err != nil {
+			t.Fatalf("seed note: %v", err)
+		}
+	}
+
+	total, err := repo.CountByUser(ctx, userID)
+	if err != nil || total != 15 {
+		t.Fatalf("count: got %d (err %v), want 15", total, err)
+	}
+
+	page1, err := repo.ListByUser(ctx, userID, 10, 0)
+	if err != nil || len(page1) != 10 {
+		t.Fatalf("page1: got %d (err %v), want 10", len(page1), err)
+	}
+	page2, err := repo.ListByUser(ctx, userID, 10, 10)
+	if err != nil || len(page2) != 5 {
+		t.Fatalf("page2: got %d (err %v), want 5", len(page2), err)
+	}
+}
+
+func TestRepository_UpdateBumpsTimestamp(t *testing.T) {
+	db, userID := setupDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	created, _ := repo.Create(ctx, userID, "old", "old body")
+	time.Sleep(5 * time.Millisecond) // ensure now() advances
+
+	updated, err := repo.Update(ctx, created.ID, "new", "new body")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Title != "new" {
+		t.Fatalf("title not updated: %+v", updated)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("updated_at should advance: created=%v updated=%v", created.UpdatedAt, updated.UpdatedAt)
+	}
+}
+
+func TestRepository_Delete(t *testing.T) {
+	db, userID := setupDB(t)
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	created, _ := repo.Create(ctx, userID, "doomed", "")
+	if err := repo.Delete(ctx, created.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := repo.GetByID(ctx, created.ID); err == nil {
+		t.Fatal("expected error fetching deleted note")
+	}
+}

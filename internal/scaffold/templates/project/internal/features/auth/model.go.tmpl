@@ -1,0 +1,56 @@
+package auth
+
+import "time"
+
+// User is the domain/DB representation of an account. PasswordHash is never
+// serialized to clients — JSON output uses UserResponse instead.
+type User struct {
+	ID           int64     `db:"id"`
+	Email        string    `db:"email"`
+	PasswordHash string    `db:"password_hash"`
+	CreatedAt    time.Time `db:"created_at"`
+}
+
+// RefreshToken mirrors a row in refresh_tokens. We store only the hash.
+type RefreshToken struct {
+	ID        int64      `db:"id"`
+	UserID    int64      `db:"user_id"`
+	TokenHash string     `db:"token_hash"`
+	ExpiresAt time.Time  `db:"expires_at"`
+	RevokedAt *time.Time `db:"revoked_at"`
+	CreatedAt time.Time  `db:"created_at"`
+}
+
+// IsActive reports whether the token can still be used.
+func (t RefreshToken) IsActive(now time.Time) bool {
+	return t.RevokedAt == nil && now.Before(t.ExpiresAt)
+}
+
+// --- Request DTOs (validated via go-playground/validator struct tags) ---
+
+// RegisterRequest is the body for registration. bcrypt only hashes the first 72
+// bytes, hence the max.
+type RegisterRequest struct {
+	Email    string `json:"email" form:"email" validate:"required,email"`
+	Password string `json:"password" form:"password" validate:"required,min=8,max=72"`
+}
+
+// LoginRequest is the body for login.
+type LoginRequest struct {
+	Email    string `json:"email" form:"email" validate:"required,email"`
+	Password string `json:"password" form:"password" validate:"required"`
+}
+
+// --- Response DTOs ---
+
+// UserResponse is the safe public view of a user (no password hash).
+type UserResponse struct {
+	ID        int64     `json:"id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ToResponse converts a domain User to its public representation.
+func (u User) ToResponse() UserResponse {
+	return UserResponse{ID: u.ID, Email: u.Email, CreatedAt: u.CreatedAt}
+}

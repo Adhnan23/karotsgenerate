@@ -1,0 +1,44 @@
+# Postgres for local dev[[if .IncludeDocker]] + an optional containerized build of the app[[end]].
+# `make db-up` starts only the db[[if .IncludeDocker]]; `docker compose --profile full up` runs both[[end]].
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: [[.DBName]]
+    ports:
+      - "[[.DBPort]]:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Create the separate test database used by `make test-integration`.
+      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d [[.DBName]]"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+[[if .IncludeDocker]]
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      APP_PORT: "[[.AppPort]]"
+      APP_BASE_URL: http://localhost:[[.AppPort]]
+      # Inside the compose network the db host is "db", not localhost.
+      DATABASE_URL: postgres://app:app@db:5432/[[.DBName]]?sslmode=disable
+      JWT_SECRET: dev-only-change-me
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL: 168h
+      AUTH_RATE_LIMIT: "10"
+    ports:
+      - "[[.AppPort]]:[[.AppPort]]"
+    profiles:
+      - full   # `docker compose --profile full up` to also run the app
+[[end]]
+volumes:
+  pgdata:

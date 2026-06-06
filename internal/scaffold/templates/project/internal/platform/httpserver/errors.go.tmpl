@@ -1,0 +1,127 @@
+package httpserver
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// errorResponse is the JSON shape returned to API clients.
+type errorResponse struct {
+	Error  string            `json:"error"`
+	Fields map[string]string `json:"fields,omitempty"` // field -> reason, for validation errors
+}
+
+// errorHandler is Echo's single HTTPErrorHandler. It classifies the error, logs 5xx,
+// and renders JSON for /api/* routes or a minimal HTML page for web routes.
+func errorHandler(logger *slog.Logger) echo.HTTPErrorHandler {
+	return func(err error, c echo.Context) {
+		if c.Response().Committed {
+			return
+		}
+
+		status, msg, fields := classify(err)
+
+		if status >= 500 {
+			logger.Error("request failed",
+				slog.Int("status", status),
+				slog.String("path", c.Request().URL.Path),
+				slog.Any("error", err),
+			)
+		}
+
+		if wantsJSON(c) {
+			_ = c.JSON(status, errorResponse{Error: msg, Fields: fields})
+			return
+		}
+		_ = c.HTML(status, htmlError(status, msg))
+	}
+}
+
+// classify maps any error to (status, client-safe message, optional field errors).
+func classify(err error) (int, string, map[string]string) {
+	// Domain errors carry their own Kind.
+	var appErr *apperr.Error
+	if errors.As(err, &appErr) {
+		return statusForKind(appErr.Kind), appErr.Message, nil
+	}
+
+	// Validation errors from go-playground/validator → 400 with per-field reasons.
+	var verrs validator.ValidationErrors
+	if errors.As(err, &verrs) {
+		fields := make(map[string]string, len(verrs))
+		for _, fe := range verrs {
+			fields[strings.ToLower(fe.Field())] = validationReason(fe)
+		}
+		return http.StatusBadRequest, "validation failed", fields
+	}
+
+	// Echo's own HTTP errors (e.g. 404 from the router, 405, bind errors).
+	var httpErr *echo.HTTPError
+	if errors.As(err, &httpErr) {
+		msg := http.StatusText(httpErr.Code)
+		if m, ok := httpErr.Message.(string); ok && m != "" {
+			msg = m
+		}
+		return httpErr.Code, msg, nil
+	}
+
+	return http.StatusInternalServerError, "internal server error", nil
+}
+
+func statusForKind(k apperr.Kind) int {
+	switch k {
+	case apperr.KindValidation:
+		return http.StatusBadRequest
+	case apperr.KindUnauthorized:
+		return http.StatusUnauthorized
+	case apperr.KindForbidden:
+		return http.StatusForbidden
+	case apperr.KindNotFound:
+		return http.StatusNotFound
+	case apperr.KindConflict:
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// validationReason turns a field error into a short human-readable reason.
+func validationReason(fe validator.FieldError) string {
+	switch fe.Tag() {
+	case "required":
+		return "is required"
+	case "email":
+		return "must be a valid email"
+	case "min":
+		return "must be at least " + fe.Param() + " characters"
+	case "max":
+		return "must be at most " + fe.Param() + " characters"
+	default:
+		return "is invalid (" + fe.Tag() + ")"
+	}
+}
+
+// wantsJSON returns true for API routes (and explicit JSON Accept headers).
+func wantsJSON(c echo.Context) bool {
+	if strings.HasPrefix(c.Request().URL.Path, "/api/") {
+		return true
+	}
+	return strings.Contains(c.Request().Header.Get(echo.HeaderAccept), echo.MIMEApplicationJSON)
+}
+
+func htmlError(status int, msg string) string {
+	return fmt.Sprintf(
+		`<!doctype html><html><head><meta charset="utf-8"><title>%d</title></head>`+
+			`<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;text-align:center">`+
+			`<h1>%d</h1><p>%s</p><p><a href="/">Home</a></p></body></html>`,
+		status, status, msg,
+	)
+}

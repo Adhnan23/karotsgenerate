@@ -1,0 +1,44 @@
+// Package auth is a self-contained feature: registration, login, token refresh, and
+// logout, exposed over both a web (htmx) surface and a JSON API surface that share one
+// Service. It also exports RequireAuth/RequireAuthWeb middleware for other features.
+package auth
+
+import (
+	"log/slog"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/platform/config"
+)
+
+// Module bundles the feature's dependencies and registers its routes.
+type Module struct {
+	svc    *Service
+	tokens *TokenService
+	logger *slog.Logger
+}
+
+// NewModule constructs the auth feature from shared dependencies.
+func NewModule(cfg config.Config, logger *slog.Logger, db *sqlx.DB) *Module {
+	tokens := NewTokenService(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, cfg.IsProduction())
+	svc := NewService(NewRepository(db), tokens)
+	return &Module{svc: svc, tokens: tokens, logger: logger}
+}
+
+// Mount registers both the web and API routes for auth.
+func (m *Module) Mount(root *echo.Group) {
+	// Web (htmx) surface.
+	root.GET("/login", m.webLoginPage)
+	root.POST("/login", m.webLogin)
+	root.GET("/register", m.webRegisterPage)
+	root.POST("/register", m.webRegister)
+	root.POST("/logout", m.webLogout)
+
+	// JSON API surface.
+	api := root.Group("/api/v1/auth")
+	api.POST("/register", m.apiRegister)
+	api.POST("/login", m.apiLogin)
+	api.POST("/refresh", m.apiRefresh)
+	api.POST("/logout", m.apiLogout)
+}

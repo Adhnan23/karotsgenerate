@@ -1,0 +1,22 @@
+// Package web embeds static front-end assets (vendored htmx + Alpine, app.css) into
+// the binary. This is the second half of the "embed" lesson: combined with the
+// embedded migrations, the compiled program is fully self-contained.
+package web
+
+import (
+	"embed"
+	"io/fs"
+)
+
+//go:embed static
+var staticFS embed.FS
+
+// StaticFS returns the embedded /static directory rooted at "static", ready to hand
+// to echo's StaticFS (so files are served at /static/<name>).
+func StaticFS() fs.FS {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic(err) // embedded path is a compile-time constant; this can't fail
+	}
+	return sub
+}

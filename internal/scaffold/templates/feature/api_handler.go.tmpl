@@ -1,0 +1,149 @@
+package [[.Lower]]
+
+import (
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/features/auth"
+)
+
+// listResponse is the JSON shape for a paginated list.
+type listResponse struct {
+	Items   [][[.Title]]Response `json:"items"`
+	Page    int                  `json:"page"`
+	Size    int                  `json:"size"`
+	Total   int                  `json:"total"`
+	HasNext bool                 `json:"has_next"`
+	HasPrev bool                 `json:"has_prev"`
+}
+
+// apiList godoc
+//
+//	@Summary	List the authenticated user's [[.Table]] (paginated)
+//	@Tags		[[.Table]]
+//	@Produce	json
+//	@Param		page	query		int	false	"page number (1-based)"
+//	@Param		size	query		int	false	"page size (max 100)"
+//	@Success	200		{object}	listResponse
+//	@Failure	401		{object}	map[string]any
+//	@Router		/[[.Table]] [get]
+func (m *Module) apiList(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+
+	var params PageParams
+	_ = c.Bind(&params)
+	page, err := m.svc.List(c.Request().Context(), userID, params)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, listResponse{
+		Items:   page.[[.Title]]Responses(),
+		Page:    page.Page,
+		Size:    page.Size,
+		Total:   page.Total,
+		HasNext: page.HasNext,
+		HasPrev: page.HasPrev,
+	})
+}
+
+// apiCreate godoc
+//
+//	@Summary	Create a [[.Lower]]
+//	@Tags		[[.Table]]
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body		Create[[.Title]]Request	true	"[[.Lower]]"
+//	@Success	201		{object}	[[.Title]]Response
+//	@Failure	400		{object}	map[string]any
+//	@Failure	401		{object}	map[string]any
+//	@Router		/[[.Table]] [post]
+func (m *Module) apiCreate(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+
+	var req Create[[.Title]]Request
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	n, err := m.svc.Create(c.Request().Context(), userID, req.Title, req.Body)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusCreated, n.ToResponse())
+}
+
+// apiGet godoc
+//
+//	@Summary	Get a single [[.Lower]] by id
+//	@Tags		[[.Table]]
+//	@Produce	json
+//	@Param		id	path		int	true	"[[.Lower]] id"
+//	@Success	200	{object}	[[.Title]]Response
+//	@Failure	404	{object}	map[string]any
+//	@Router		/[[.Table]]/{id} [get]
+func (m *Module) apiGet(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	n, err := m.svc.Get(c.Request().Context(), userID, id)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, n.ToResponse())
+}
+
+// apiUpdate godoc
+//
+//	@Summary	Update a [[.Lower]]
+//	@Tags		[[.Table]]
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path		int						true	"[[.Lower]] id"
+//	@Param		body	body		Update[[.Title]]Request	true	"[[.Lower]]"
+//	@Success	200		{object}	[[.Title]]Response
+//	@Failure	404		{object}	map[string]any
+//	@Router		/[[.Table]]/{id} [put]
+func (m *Module) apiUpdate(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	var req Update[[.Title]]Request
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	n, err := m.svc.Update(c.Request().Context(), userID, id, req.Title, req.Body)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, n.ToResponse())
+}
+
+// apiDelete godoc
+//
+//	@Summary	Delete a [[.Lower]]
+//	@Tags		[[.Table]]
+//	@Param		id	path	int	true	"[[.Lower]] id"
+//	@Success	204	"no content"
+//	@Failure	404	{object}	map[string]any
+//	@Router		/[[.Table]]/{id} [delete]
+func (m *Module) apiDelete(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	if err := m.svc.Delete(c.Request().Context(), userID, id); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
+}

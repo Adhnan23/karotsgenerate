@@ -1,0 +1,61 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A teaching/reference fullstack Go app (`[[.ModulePath]]`, Go 1.26).
+Domain is per-user **notes**; the point is the *patterns*, not the domain. Full design
+in `docs/superpowers/specs/2026-06-05-go-fullstack-reference-design.md`; phase-by-phase
+progress in `docs/TASKS.md`.
+
+Stack: Echo v4 · templ · htmx + Alpine · sqlx + pgx · Postgres 17 · goose (embedded) ·
+go-playground/validator · golang-jwt v5 · swaggo/Swagger UI · slog.
+
+## Commands
+
+```sh
+make db-up              # start Postgres 17 in docker (host port 5432)
+make run                # generate code + migrate + serve on :8080
+make dev                # live-reload dev server (air): rebuild on .go/.templ changes
+make test               # unit tests only (no DB)
+make test-integration   # repository tests vs real Postgres (build tag: integration)
+make test-e2e           # full-app e2e tests (build tag: e2e)
+make generate           # templ generate + swag init  (run after editing .templ/annotations)
+make migrate-create name=foo   # new goose migration
+go test -run TestName ./internal/features/note/   # a single test
+```
+
+Integration/e2e tests read `TEST_DATABASE_URL` and **skip** if it's unset; `make` loads
+it from `.env`. Postgres runs on **5432**.
+
+## Architecture (the non-obvious parts)
+
+- **Feature-based vertical slices.** Each `internal/features/<name>/` owns its full
+  stack (model, repository, service, handlers, views) and self-registers via
+  `Module.Mount(*echo.Group)`. Shared infra is in `internal/platform/*`.
+- **Two surfaces, one core.** Each feature has `web_handler.go` (htmx/templ) AND
+  `api_handler.go` (JSON, swaggo-annotated) that call the **same `service.go`**. Put
+  business logic in the service, never in a handler — otherwise the surfaces drift.
+- **`internal/app/Build`** wires everything and is reused by both `cmd/web` and the e2e
+  tests. Add a new feature module here.
+- **Cross-feature dependency is explicit**: `auth` exports `RequireAuth` /
+  `RequireAuthWeb`; `note.NewModule` receives them as injected `echo.MiddlewareFunc`.
+- **Errors**: services return `internal/platform/apperr` domain errors (Kind-based);
+  the central handler in `httpserver/errors.go` maps them to JSON (for `/api/*`) or an
+  HTML page (web). Don't return raw HTTP errors from services.
+- **templ views are colocated in the feature package** (not a sub-package) so they can
+  use the feature's own types without an import cycle. After editing `.templ`, run
+  `make generate` (or `make run`).
+- **Auth**: access + refresh JWTs in HTTP-only cookies; refresh token hash stored in
+  `refresh_tokens` for rotation + reuse detection. Email is carried in the JWT claims
+  to avoid a per-request DB lookup.
+
+## Conventions
+
+- Generated files (`*_templ.go`, `docs/swagger/`) **are committed** so `go build ./...`
+  works after clone. Regenerate with `make generate` when you change sources.
+- New DB access goes through a feature's `Repository` **interface** (enables the mock
+  in `*_test.go`); add the sqlx implementation alongside.
+- CSRF middleware guards web routes and skips `/api`, `/static`, `/swagger`, `/healthz`.
+  The JSON API is exempt by design (non-browser clients).

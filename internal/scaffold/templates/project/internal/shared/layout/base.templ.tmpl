@@ -1,0 +1,49 @@
+package layout
+
+// Base is the HTML shell every page renders inside. It wires htmx + Alpine (served
+// from /static, embedded in the binary), exposes the CSRF token to htmx via a meta
+// tag + header config, and renders its children in the <main> slot.
+//
+// `user` is the logged-in user's email ("" when logged out) used to render the nav.
+templ Base(title, user, csrfToken string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="csrf-token" content={ csrfToken }/>
+			<title>{ title }</title>
+			<link rel="stylesheet" href="/static/app.css"/>
+			<script src="/static/htmx.min.js"></script>
+			<script defer src="/static/alpine.min.js"></script>
+			<!-- Send the CSRF token on every htmx request that mutates state. -->
+			<script>
+				document.addEventListener('htmx:configRequest', (e) => {
+					const t = document.querySelector('meta[name="csrf-token"]');
+					if (t) e.detail.headers['X-CSRF-Token'] = t.content;
+				});
+			</script>
+		</head>
+		<body>
+			<header class="nav">
+				<a href="/" class="brand">go-learning</a>
+				<nav>
+					if user != "" {
+						<a href="/notes">Notes</a>
+						<span class="user">{ user }</span>
+						<form method="post" action="/logout" class="inline">
+							<input type="hidden" name="_csrf" value={ csrfToken }/>
+							<button type="submit" class="link">Log out</button>
+						</form>
+					} else {
+						<a href="/login">Log in</a>
+						<a href="/register">Register</a>
+					}
+				</nav>
+			</header>
+			<main class="container">
+				{ children... }
+			</main>
+		</body>
+	</html>
+}

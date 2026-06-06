@@ -1,0 +1,84 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"net/http"
+	"testing"
+)
+
+// TestE2E_NotesCRUD exercises the full note lifecycle through the running server,
+// authenticating the same way a real client would.
+func TestE2E_NotesCRUD(t *testing.T) {
+	c := newClient(t)
+	creds := map[string]string{"email": "notes-e2e@example.com", "password": "password123"}
+	c.do(http.MethodPost, "/api/v1/auth/register", creds, nil)
+	c.do(http.MethodPost, "/api/v1/auth/login", creds, nil)
+
+	// Create.
+	var created struct {
+		ID    int64  `json:"id"`
+		Title string `json:"title"`
+	}
+	resp := c.do(http.MethodPost, "/api/v1/notes",
+		map[string]string{"title": "First", "body": "hello"}, &created)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", resp.StatusCode)
+	}
+	if created.ID == 0 {
+		t.Fatal("create did not return an id")
+	}
+
+	// List shows it.
+	var list struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+	}
+	c.do(http.MethodGet, "/api/v1/notes", nil, &list)
+	if list.Total != 1 || len(list.Items) != 1 {
+		t.Fatalf("list: got total=%d items=%d, want 1/1", list.Total, len(list.Items))
+	}
+
+	// Update.
+	var updated struct {
+		Title string `json:"title"`
+	}
+	resp = c.do(http.MethodPut, "/api/v1/notes/"+itoa(created.ID),
+		map[string]string{"title": "Updated", "body": "changed"}, &updated)
+	if resp.StatusCode != http.StatusOK || updated.Title != "Updated" {
+		t.Fatalf("update: got %d title=%q", resp.StatusCode, updated.Title)
+	}
+
+	// Delete, then it's gone.
+	if resp := c.do(http.MethodDelete, "/api/v1/notes/"+itoa(created.ID), nil, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: got %d, want 204", resp.StatusCode)
+	}
+	if resp := c.do(http.MethodGet, "/api/v1/notes/"+itoa(created.ID), nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after delete: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestE2E_NotesAreScopedPerUser proves two users can't see each other's notes through
+// the live server.
+func TestE2E_NotesAreScopedPerUser(t *testing.T) {
+	a := newClient(t)
+	ca := map[string]string{"email": "owner@example.com", "password": "password123"}
+	a.do(http.MethodPost, "/api/v1/auth/register", ca, nil)
+	a.do(http.MethodPost, "/api/v1/auth/login", ca, nil)
+	var note struct {
+		ID int64 `json:"id"`
+	}
+	a.do(http.MethodPost, "/api/v1/notes", map[string]string{"title": "secret"}, &note)
+
+	// Second user (separate cookie jar) registered on the SAME server+DB.
+	b := &client{t: t, base: a.base, http: newJarClient()}
+	cb := map[string]string{"email": "intruder@example.com", "password": "password123"}
+	b.do(http.MethodPost, "/api/v1/auth/register", cb, nil)
+	b.do(http.MethodPost, "/api/v1/auth/login", cb, nil)
+
+	if resp := b.do(http.MethodGet, "/api/v1/notes/"+itoa(note.ID), nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("intruder reading owner's note: got %d, want 404", resp.StatusCode)
+	}
+}

@@ -1,0 +1,146 @@
+// Package config loads typed application configuration from environment variables.
+//
+// It also loads a local .env file (if present) so `go run ./cmd/web` works during
+// development without exporting variables by hand. In production you'd set real
+// environment variables and the .env file simply won't exist.
+package config
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Config is the fully-parsed, validated application configuration. Everything the
+// app needs to boot lives here, so the rest of the code never touches os.Getenv.
+type Config struct {
+	Env     string // "development" | "production"
+	Port    string
+	BaseURL string
+
+	DatabaseURL string
+
+	JWTSecret       []byte
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
+
+	AuthRateLimit int // requests/minute/IP on auth endpoints
+}
+
+// IsProduction controls things like the cookie Secure flag and log format.
+func (c Config) IsProduction() bool { return c.Env == "production" }
+
+// Load reads configuration from the environment (after loading .env if present),
+// applies defaults, and validates required values.
+func Load() (Config, error) {
+	loadDotEnv(".env")
+
+	cfg := Config{
+		Env:         getenv("APP_ENV", "development"),
+		Port:        getenv("APP_PORT", "8080"),
+		BaseURL:     getenv("APP_BASE_URL", "http://localhost:8080"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		JWTSecret:   []byte(os.Getenv("JWT_SECRET")),
+	}
+
+	var err error
+	if cfg.AccessTokenTTL, err = parseDuration("ACCESS_TOKEN_TTL", "15m"); err != nil {
+		return Config{}, err
+	}
+	if cfg.RefreshTokenTTL, err = parseDuration("REFRESH_TOKEN_TTL", "168h"); err != nil {
+		return Config{}, err
+	}
+	if cfg.AuthRateLimit, err = parseInt("AUTH_RATE_LIMIT", 10); err != nil {
+		return Config{}, err
+	}
+
+	// Validate the values we cannot run without.
+	if cfg.DatabaseURL == "" {
+		return Config{}, fmt.Errorf("DATABASE_URL is required")
+	}
+	if len(cfg.JWTSecret) < 16 {
+		return Config{}, fmt.Errorf("JWT_SECRET is required and must be at least 16 bytes")
+	}
+
+	return cfg, nil
+}
+
+func getenv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func parseDuration(key, fallback string) (time.Duration, error) {
+	d, err := time.ParseDuration(getenv(key, fallback))
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return d, nil
+}
+
+func parseInt(key string, fallback int) (int, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return n, nil
+}
+
+// loadDotEnv reads KEY=VALUE lines from path into the environment, without
+// overwriting variables that are already set. Missing file is not an error.
+// This is a deliberately tiny parser so the mechanism is visible — for anything
+// fancier reach for github.com/joho/godotenv.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return // no .env file; rely on real environment
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = parseValue(val)
+		if _, exists := os.LookupEnv(key); !exists {
+			_ = os.Setenv(key, val)
+		}
+	}
+	_ = scanner.Err() // best-effort: a malformed .env shouldn't crash startup
+}
+
+// parseValue extracts the value from the right-hand side of a KEY=VALUE line.
+// Quoted values keep their contents verbatim; unquoted values have any trailing
+// inline comment ("VALUE # comment") and surrounding whitespace stripped.
+func parseValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) >= 2 && (raw[0] == '"' || raw[0] == '\'') {
+		quote := raw[0]
+		if end := strings.IndexByte(raw[1:], quote); end >= 0 {
+			return raw[1 : 1+end]
+		}
+	}
+	// Unquoted: cut at the first " #" / "\t#" inline comment marker.
+	if i := strings.IndexAny(raw, " \t"); i >= 0 {
+		if hash := strings.IndexByte(raw[i:], '#'); hash >= 0 {
+			raw = raw[:i+hash]
+		}
+	}
+	return strings.TrimSpace(raw)
+}

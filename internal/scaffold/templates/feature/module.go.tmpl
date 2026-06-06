@@ -1,0 +1,61 @@
+// Package [[.Lower]] is a self-contained feature: per-user [[.Lower]] CRUD over
+[[if .IncludeWeb]][[if .IncludeAPI]]// both a web (htmx) surface and a JSON API surface that share one Service.
+[[else]]// a web (htmx) surface backed by a Service.
+[[end]][[else]]// a JSON API surface backed by a Service.
+[[end]]// Its routes are protected by auth middleware injected from the app wiring.
+package [[.Lower]]
+
+import (
+	"log/slog"
+	"strconv"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// Module bundles the feature's dependencies and registers its routes. The two guard
+// middlewares come from the auth feature (RequireAuth for API, RequireAuthWeb for the
+// browser) and are injected rather than importing auth.Module directly.
+type Module struct {
+	svc      *Service
+	logger   *slog.Logger
+	apiGuard echo.MiddlewareFunc
+	webGuard echo.MiddlewareFunc
+}
+
+// NewModule constructs the [[.Lower]] feature.
+func NewModule(logger *slog.Logger, db *sqlx.DB, apiGuard, webGuard echo.MiddlewareFunc) *Module {
+	return &Module{
+		svc:      NewService(NewRepository(db)),
+		logger:   logger,
+		apiGuard: apiGuard,
+		webGuard: webGuard,
+	}
+}
+
+// Mount registers the routes, each behind the appropriate auth guard.
+func (m *Module) Mount(root *echo.Group) {
+[[if .IncludeWeb]]	web := root.Group("/[[.Table]]", m.webGuard)
+	web.GET("", m.webList)
+	web.POST("", m.webCreate)
+	web.DELETE("/:id", m.webDelete)
+
+[[end]][[if .IncludeAPI]]	api := root.Group("/api/v1/[[.Table]]", m.apiGuard)
+	api.GET("", m.apiList)
+	api.POST("", m.apiCreate)
+	api.GET("/:id", m.apiGet)
+	api.PUT("/:id", m.apiUpdate)
+	api.DELETE("/:id", m.apiDelete)
+[[end]]}
+
+// parseID reads the :id path param as an int64, returning a validation error on bad
+// input. Shared by the web + API handlers.
+func parseID(c echo.Context) (int64, error) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return 0, apperr.Validation("invalid [[.Lower]] id")
+	}
+	return id, nil
+}

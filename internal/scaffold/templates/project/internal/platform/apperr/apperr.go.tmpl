@@ -1,0 +1,54 @@
+// Package apperr defines transport-agnostic domain errors.
+//
+// Services return these instead of HTTP errors, so the service layer stays free of
+// HTTP concerns (and is easy to unit-test). The central error handler
+// (internal/platform/httpserver) maps each Kind to an HTTP status and the right
+// response shape (JSON for /api, HTML for web).
+package apperr
+
+import "fmt"
+
+// Kind classifies a domain error independently of any transport.
+type Kind int
+
+const (
+	KindInternal Kind = iota
+	KindValidation
+	KindUnauthorized
+	KindForbidden
+	KindNotFound
+	KindConflict
+)
+
+// Error is a domain error carrying a Kind, a user-safe message, and an optional
+// wrapped cause (for logs; never shown to clients).
+type Error struct {
+	Kind    Kind
+	Message string
+	Err     error
+}
+
+func (e *Error) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Err)
+	}
+	return e.Message
+}
+
+func (e *Error) Unwrap() error { return e.Err }
+
+// Constructors. The variadic cause lets callers attach a wrapped error for logging.
+func NotFound(msg string, cause ...error) *Error     { return build(KindNotFound, msg, cause) }
+func Conflict(msg string, cause ...error) *Error     { return build(KindConflict, msg, cause) }
+func Unauthorized(msg string, cause ...error) *Error { return build(KindUnauthorized, msg, cause) }
+func Forbidden(msg string, cause ...error) *Error    { return build(KindForbidden, msg, cause) }
+func Validation(msg string, cause ...error) *Error   { return build(KindValidation, msg, cause) }
+func Internal(msg string, cause ...error) *Error     { return build(KindInternal, msg, cause) }
+
+func build(k Kind, msg string, cause []error) *Error {
+	e := &Error{Kind: k, Message: msg}
+	if len(cause) > 0 {
+		e.Err = cause[0]
+	}
+	return e
+}

@@ -1,0 +1,166 @@
+package note
+
+// Unit tests for the note service. These use a HAND-WRITTEN mock repository (no
+// mocking framework) so the mechanism is fully visible: the mock is just a struct
+// whose methods call function fields the test sets. Because Service depends on the
+// Repository *interface*, we can swap in this fake and test business rules
+// (ownership, pagination math) in milliseconds with no database.
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"testing"
+
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// mockRepo implements Repository. Each method delegates to a function field, so each
+// test wires up only the behavior it needs.
+type mockRepo struct {
+	createFn func(ctx context.Context, userID int64, title, body string) (Note, error)
+	getByID  func(ctx context.Context, id int64) (Note, error)
+	listFn   func(ctx context.Context, userID int64, limit, offset int) ([]Note, error)
+	countFn  func(ctx context.Context, userID int64) (int, error)
+	updateFn func(ctx context.Context, id int64, title, body string) (Note, error)
+	deleteFn func(ctx context.Context, id int64) error
+}
+
+func (m *mockRepo) Create(ctx context.Context, userID int64, title, body string) (Note, error) {
+	return m.createFn(ctx, userID, title, body)
+}
+func (m *mockRepo) GetByID(ctx context.Context, id int64) (Note, error) { return m.getByID(ctx, id) }
+func (m *mockRepo) ListByUser(ctx context.Context, userID int64, limit, offset int) ([]Note, error) {
+	return m.listFn(ctx, userID, limit, offset)
+}
+func (m *mockRepo) CountByUser(ctx context.Context, userID int64) (int, error) {
+	return m.countFn(ctx, userID)
+}
+func (m *mockRepo) Update(ctx context.Context, id int64, title, body string) (Note, error) {
+	return m.updateFn(ctx, id, title, body)
+}
+func (m *mockRepo) Delete(ctx context.Context, id int64) error { return m.deleteFn(ctx, id) }
+
+// assertKind fails the test unless err is an *apperr.Error of the wanted Kind.
+func assertKind(t *testing.T, err error, want apperr.Kind) {
+	t.Helper()
+	var ae *apperr.Error
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *apperr.Error, got %T (%v)", err, err)
+	}
+	if ae.Kind != want {
+		t.Fatalf("expected kind %d, got %d (%v)", want, ae.Kind, err)
+	}
+}
+
+func TestService_Get(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns note the user owns", func(t *testing.T) {
+		repo := &mockRepo{getByID: func(_ context.Context, id int64) (Note, error) {
+			return Note{ID: id, UserID: 1, Title: "mine"}, nil
+		}}
+		got, err := NewService(repo).Get(ctx, 1, 99)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Title != "mine" {
+			t.Fatalf("got %q", got.Title)
+		}
+	})
+
+	t.Run("hides notes owned by someone else as NotFound", func(t *testing.T) {
+		repo := &mockRepo{getByID: func(_ context.Context, id int64) (Note, error) {
+			return Note{ID: id, UserID: 2}, nil // owned by user 2
+		}}
+		_, err := NewService(repo).Get(ctx, 1, 99) // user 1 asks
+		assertKind(t, err, apperr.KindNotFound)
+	})
+
+	t.Run("maps missing row to NotFound", func(t *testing.T) {
+		repo := &mockRepo{getByID: func(context.Context, int64) (Note, error) {
+			return Note{}, sql.ErrNoRows
+		}}
+		_, err := NewService(repo).Get(ctx, 1, 99)
+		assertKind(t, err, apperr.KindNotFound)
+	})
+}
+
+func TestService_List_PaginationMetadata(t *testing.T) {
+	ctx := context.Background()
+	const total = 25
+
+	cases := []struct {
+		name               string
+		page, size         int
+		returned           int // items the repo returns for this page
+		wantPage           int
+		wantNext, wantPrev bool
+	}{
+		{"first page", 1, 10, 10, 1, true, false},
+		{"middle page", 2, 10, 10, 2, true, true},
+		{"last page", 3, 10, 5, 3, false, true},
+		{"defaults applied for junk input", 0, 0, 10, 1, true, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockRepo{
+				countFn: func(context.Context, int64) (int, error) { return total, nil },
+				listFn: func(_ context.Context, _ int64, limit, offset int) ([]Note, error) {
+					return make([]Note, tc.returned), nil
+				},
+			}
+			got, err := NewService(repo).List(ctx, 1, PageParams{Page: tc.page, Size: tc.size})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.Page != tc.wantPage {
+				t.Errorf("page: got %d want %d", got.Page, tc.wantPage)
+			}
+			if got.Total != total {
+				t.Errorf("total: got %d want %d", got.Total, total)
+			}
+			if got.HasNext != tc.wantNext {
+				t.Errorf("has_next: got %v want %v", got.HasNext, tc.wantNext)
+			}
+			if got.HasPrev != tc.wantPrev {
+				t.Errorf("has_prev: got %v want %v", got.HasPrev, tc.wantPrev)
+			}
+		})
+	}
+}
+
+func TestService_Update_EnforcesOwnership(t *testing.T) {
+	ctx := context.Background()
+	updateCalled := false
+	repo := &mockRepo{
+		getByID: func(_ context.Context, id int64) (Note, error) {
+			return Note{ID: id, UserID: 2}, nil // someone else's note
+		},
+		updateFn: func(context.Context, int64, string, string) (Note, error) {
+			updateCalled = true
+			return Note{}, nil
+		},
+	}
+	_, err := NewService(repo).Update(ctx, 1, 99, "x", "y")
+	assertKind(t, err, apperr.KindNotFound)
+	if updateCalled {
+		t.Fatal("update must not run when the user doesn't own the note")
+	}
+}
+
+func TestService_Delete_Success(t *testing.T) {
+	ctx := context.Background()
+	deleted := int64(0)
+	repo := &mockRepo{
+		getByID:  func(_ context.Context, id int64) (Note, error) { return Note{ID: id, UserID: 1}, nil },
+		deleteFn: func(_ context.Context, id int64) error { deleted = id; return nil },
+	}
+	if err := NewService(repo).Delete(ctx, 1, 42); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 42 {
+		t.Fatalf("expected delete(42), got delete(%d)", deleted)
+	}
+}

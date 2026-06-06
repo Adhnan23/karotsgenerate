@@ -1,0 +1,114 @@
+# Makefile — common dev tasks. Run `make help` for a list.
+# Most targets read DATABASE_URL etc. from .env if present.
+
+include .env
+export
+
+.DEFAULT_GOAL := help
+
+# Where `go install`-ed tools land. Add to PATH if these aren't found.
+GOBIN := $(shell go env GOPATH)/bin
+
+.PHONY: help
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+
+## --- Database (docker) ---
+.PHONY: db-up
+db-up: ## Start Postgres (docker compose)
+	docker compose up -d db
+
+.PHONY: db-down
+db-down: ## Stop and remove Postgres + volume
+	docker compose down -v
+
+## --- Migrations (goose) ---
+# Migrations are also embedded and run by the app on boot; these targets are for
+# manual control during development.
+.PHONY: migrate-up
+migrate-up: ## Apply all up migrations
+	$(GOBIN)/goose -dir migrations postgres "$(DATABASE_URL)" up
+
+.PHONY: migrate-down
+migrate-down: ## Roll back the most recent migration
+	$(GOBIN)/goose -dir migrations postgres "$(DATABASE_URL)" down
+
+.PHONY: migrate-status
+migrate-status: ## Show migration status
+	$(GOBIN)/goose -dir migrations postgres "$(DATABASE_URL)" status
+
+.PHONY: migrate-create
+migrate-create: ## Create a new migration: make migrate-create name=add_x
+	$(GOBIN)/goose -dir migrations create $(name) sql
+
+## --- Codegen ---
+.PHONY: templ
+templ: ## Generate Go from .templ files
+	$(GOBIN)/templ generate
+
+[[if .IncludeSwagger]].PHONY: swag
+swag: ## Generate OpenAPI docs from swaggo annotations
+	$(GOBIN)/swag init -g cmd/web/main.go -o docs/swagger --parseInternal
+
+[[end]].PHONY: generate
+generate: templ [[if .IncludeSwagger]]swag [[end]]## Run all codegen
+
+## --- Build & run ---
+.PHONY: run
+run: generate ## Run the app (regenerates templ + swagger first)
+	go run ./cmd/web
+
+.PHONY: dev
+dev: [[if .IncludeSwagger]]swag [[end]]## Live-reload dev server (air): rebuilds on .go/.templ changes
+	$(GOBIN)/air
+
+.PHONY: build
+build: generate ## Build the single embedded binary into ./bin/web
+	go build -o bin/web ./cmd/web
+
+.PHONY: build-linux-static
+build-linux-static: generate ## Static Linux binary
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+		-trimpath \
+		-ldflags="-s -w" \
+		-o bin/web-linux-amd64 ./cmd/web
+
+.PHONY: build-windows-static
+build-windows-static: generate ## Static Windows binary
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
+		-trimpath \
+		-ldflags="-s -w" \
+		-o bin/web-windows-amd64.exe ./cmd/web
+
+.PHONY: build-static
+build-static: build-linux-static build-windows-static ## Build all static binaries
+
+## --- Tests ---
+.PHONY: test
+test: ## Unit tests only (mocked DB, no Postgres needed)
+	go test ./internal/... ./cmd/...
+
+.PHONY: test-integration
+test-integration: ## Repository tests against real Postgres (needs db-up)
+	go test -tags=integration ./internal/features/...
+
+.PHONY: test-e2e
+test-e2e: ## End-to-end tests against the running app (needs db-up)
+	go test -tags=e2e ./e2e/...
+
+.PHONY: test-all
+test-all: test test-integration test-e2e ## Everything
+
+## --- Quality ---
+.PHONY: lint
+lint: ## Lint (golangci-lint if present, else go vet)
+	@if [ -x "$(GOBIN)/golangci-lint" ]; then $(GOBIN)/golangci-lint run; \
+	else echo "golangci-lint not found, falling back to go vet"; go vet ./...; fi
+
+.PHONY: tools
+tools: ## Install dev tools (templ, [[if .IncludeSwagger]]swag, [[end]]goose, air)
+	go install github.com/a-h/templ/cmd/templ@latest
+[[if .IncludeSwagger]]	go install github.com/swaggo/swag/cmd/swag@latest
+[[end]]	go install github.com/pressly/goose/v3/cmd/goose@latest
+	go install github.com/air-verse/air@latest

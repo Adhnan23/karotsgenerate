@@ -1,0 +1,47 @@
+// Package app wires the whole application together: shared dependencies, static
+// assets,[[if .IncludeSwagger]] Swagger UI,[[end]] and every feature module mounted onto one server.
+//
+// It's deliberately separate from main so that end-to-end tests can build the exact
+// same server (see e2e/) without duplicating wiring.
+package app
+
+import (
+	"log/slog"
+	"net/http"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/labstack/echo/v4"
+[[if .IncludeSwagger]]	echoSwagger "github.com/swaggo/echo-swagger"
+
+	_ "[[.ModulePath]]/docs/swagger" // generated OpenAPI spec
+[[end]]	"[[.ModulePath]]/internal/features/auth"
+[[if .IncludeNote]]	"[[.ModulePath]]/internal/features/note"
+[[end]]	"[[.ModulePath]]/internal/platform/config"
+	"[[.ModulePath]]/internal/platform/httpserver"
+	"[[.ModulePath]]/internal/platform/validate"
+	"[[.ModulePath]]/web"
+	// karotsgenerate:imports
+)
+
+// Build constructs the fully-wired server: middleware, validator, static assets,
+// [[if .IncludeSwagger]]Swagger UI, and [[end]]all feature modules. The caller owns running and shutting it down.
+func Build(cfg config.Config, logger *slog.Logger, db *sqlx.DB) *httpserver.Server {
+	srv := httpserver.New(cfg, logger, db)
+	e := srv.Echo()
+	e.Validator = validate.New()
+
+	// Embedded static assets + root redirect[[if .IncludeSwagger]] + Swagger UI[[end]].
+	e.StaticFS("/static", web.StaticFS())
+	e.GET("/", func(c echo.Context) error { return c.Redirect(http.StatusSeeOther, "[[if .IncludeNote]]/notes[[else]]/login[[end]]") })
+[[if .IncludeSwagger]]	e.GET("/swagger/*", echoSwagger.WrapHandler)
+[[end]]
+	// Feature modules. Each self-mounts; features reuse the auth middleware as guards.
+	authMod := auth.NewModule(cfg, logger, db)
+	srv.Mount(authMod)
+[[if .IncludeNote]]
+	noteMod := note.NewModule(logger, db, authMod.RequireAuth, authMod.RequireAuthWeb)
+	srv.Mount(noteMod)
+[[end]]	// karotsgenerate:mounts — `karotsgenerate add feature` inserts new modules above this line
+
+	return srv
+}

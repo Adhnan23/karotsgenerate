@@ -1,0 +1,74 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"net/http"
+	"testing"
+)
+
+// TestE2E_AuthFlow drives the complete auth lifecycle over real HTTP and asserts the
+// things only an end-to-end test can: that cookies are actually set HTTP-only, that a
+// protected route becomes reachable after login, that refresh rotates the cookie, and
+// that logout truly invalidates the session.
+func TestE2E_AuthFlow(t *testing.T) {
+	c := newClient(t)
+	creds := map[string]string{"email": "e2e@example.com", "password": "password123"}
+
+	// Register.
+	if resp := c.do(http.MethodPost, "/api/v1/auth/register", creds, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register: got %d, want 201", resp.StatusCode)
+	}
+
+	// Protected route is unreachable before login.
+	if resp := c.do(http.MethodGet, "/api/v1/notes", nil, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("notes before login: got %d, want 401", resp.StatusCode)
+	}
+
+	// Login — assert both cookies are set HTTP-only.
+	resp := c.do(http.MethodPost, "/api/v1/auth/login", creds, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: got %d, want 200", resp.StatusCode)
+	}
+	assertHTTPOnly(t, resp, "access_token")
+	assertHTTPOnly(t, resp, "refresh_token")
+
+	// Protected route now works.
+	if resp := c.do(http.MethodGet, "/api/v1/notes", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("notes after login: got %d, want 200", resp.StatusCode)
+	}
+
+	// Refresh rotates the refresh cookie.
+	oldRefresh := c.cookie("refresh_token").Value
+	if resp := c.do(http.MethodPost, "/api/v1/auth/refresh", nil, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("refresh: got %d, want 200", resp.StatusCode)
+	}
+	if c.cookie("refresh_token").Value == oldRefresh {
+		t.Fatal("refresh did not rotate the refresh token")
+	}
+
+	// Logout, then the protected route is unreachable again.
+	if resp := c.do(http.MethodPost, "/api/v1/auth/logout", nil, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout: got %d, want 204", resp.StatusCode)
+	}
+	if resp := c.do(http.MethodGet, "/api/v1/notes", nil, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("notes after logout: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// assertHTTPOnly checks the response's Set-Cookie for a non-empty HTTP-only cookie.
+func assertHTTPOnly(t *testing.T, resp *http.Response, name string) {
+	t.Helper()
+	for _, ck := range resp.Cookies() {
+		if ck.Name == name {
+			if ck.Value == "" {
+				t.Fatalf("cookie %q is empty", name)
+			}
+			if !ck.HttpOnly {
+				t.Fatalf("cookie %q must be HttpOnly", name)
+			}
+			return
+		}
+	}
+	t.Fatalf("cookie %q not set on response", name)
+}

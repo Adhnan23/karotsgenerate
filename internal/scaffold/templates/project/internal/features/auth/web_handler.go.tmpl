@@ -1,0 +1,55 @@
+package auth
+
+import (
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/platform/render"
+)
+
+func (m *Module) webLoginPage(c echo.Context) error {
+	return render.Component(c, http.StatusOK, LoginPage(render.CSRFToken(c), "", ""))
+}
+
+func (m *Module) webLogin(c echo.Context) error {
+	var req LoginRequest
+	_ = c.Bind(&req)
+	if err := c.Validate(&req); err != nil {
+		return render.Partial(c, LoginForm(render.CSRFToken(c), req.Email, "Enter a valid email and password."))
+	}
+	_, pair, err := m.svc.Login(c.Request().Context(), req.Email, req.Password)
+	if err != nil {
+		return render.Partial(c, LoginForm(render.CSRFToken(c), req.Email, render.ErrorMessage(err)))
+	}
+	m.tokens.SetAuthCookies(c, pair.Access, pair.Refresh)
+	return render.Redirect(c, "/notes")
+}
+
+func (m *Module) webRegisterPage(c echo.Context) error {
+	return render.Component(c, http.StatusOK, RegisterPage(render.CSRFToken(c), "", ""))
+}
+
+func (m *Module) webRegister(c echo.Context) error {
+	var req RegisterRequest
+	_ = c.Bind(&req)
+	if err := c.Validate(&req); err != nil {
+		return render.Partial(c, RegisterForm(render.CSRFToken(c), req.Email, "Email must be valid and password at least 8 characters."))
+	}
+	_, err := m.svc.Register(c.Request().Context(), req.Email, req.Password)
+	if err != nil {
+		return render.Partial(c, RegisterForm(render.CSRFToken(c), req.Email, render.ErrorMessage(err)))
+	}
+	// Auto-login after registering for a smooth flow.
+	_, pair, err := m.svc.Login(c.Request().Context(), req.Email, req.Password)
+	if err != nil {
+		return render.Redirect(c, "/login")
+	}
+	m.tokens.SetAuthCookies(c, pair.Access, pair.Refresh)
+	return render.Redirect(c, "/notes")
+}
+
+func (m *Module) webLogout(c echo.Context) error {
+	m.logoutFromCookie(c)
+	return render.Redirect(c, "/login")
+}

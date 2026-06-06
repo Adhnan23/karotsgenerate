@@ -1,0 +1,19 @@
+# air — live reload for development. Run with `make dev` (or `air`).
+# On a change it regenerates templ, rebuilds the binary, and restarts the server.
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  # Regenerate templ first so .templ edits are reflected, then build.
+  cmd = "templ generate && go build -o ./tmp/main ./cmd/web"
+  bin = "./tmp/main"
+  # Watch these extensions for changes.
+  include_ext = ["go", "templ", "html", "css", "js", "sql"]
+  # Don't retrigger on generated files (avoids a rebuild loop) or test files.
+  exclude_regex = ["_test\\.go", ".*_templ\\.go"]
+  exclude_dir = ["tmp", "bin", "docs", ".git", ".github", "e2e"]
+  stop_on_error = true
+  delay = 200 # ms to debounce rapid saves
+
+[misc]
+  clean_on_exit = true

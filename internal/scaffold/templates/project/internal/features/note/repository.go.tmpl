@@ -1,0 +1,79 @@
+package note
+
+import (
+	"context"
+
+	"github.com/jmoiron/sqlx"
+)
+
+// Repository is the data-access contract for notes. Defined as an interface so the
+// service can be unit-tested with a mock (see note/service_test.go).
+type Repository interface {
+	Create(ctx context.Context, userID int64, title, body string) (Note, error)
+	GetByID(ctx context.Context, id int64) (Note, error)
+	ListByUser(ctx context.Context, userID int64, limit, offset int) ([]Note, error)
+	CountByUser(ctx context.Context, userID int64) (int, error)
+	Update(ctx context.Context, id int64, title, body string) (Note, error)
+	Delete(ctx context.Context, id int64) error
+}
+
+type sqlxRepository struct {
+	db *sqlx.DB
+}
+
+// NewRepository returns the sqlx-backed Repository.
+func NewRepository(db *sqlx.DB) Repository {
+	return &sqlxRepository{db: db}
+}
+
+func (r *sqlxRepository) Create(ctx context.Context, userID int64, title, body string) (Note, error) {
+	const q = `
+		INSERT INTO notes (user_id, title, body)
+		VALUES ($1, $2, $3)
+		RETURNING id, user_id, title, body, created_at, updated_at`
+	var n Note
+	err := r.db.GetContext(ctx, &n, q, userID, title, body)
+	return n, err
+}
+
+func (r *sqlxRepository) GetByID(ctx context.Context, id int64) (Note, error) {
+	const q = `SELECT id, user_id, title, body, created_at, updated_at FROM notes WHERE id = $1`
+	var n Note
+	err := r.db.GetContext(ctx, &n, q, id)
+	return n, err // sql.ErrNoRows bubbles up; service maps it to NotFound
+}
+
+func (r *sqlxRepository) ListByUser(ctx context.Context, userID int64, limit, offset int) ([]Note, error) {
+	const q = `
+		SELECT id, user_id, title, body, created_at, updated_at
+		FROM notes
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`
+	notes := []Note{}
+	err := r.db.SelectContext(ctx, &notes, q, userID, limit, offset)
+	return notes, err
+}
+
+func (r *sqlxRepository) CountByUser(ctx context.Context, userID int64) (int, error) {
+	const q = `SELECT count(*) FROM notes WHERE user_id = $1`
+	var n int
+	err := r.db.GetContext(ctx, &n, q, userID)
+	return n, err
+}
+
+func (r *sqlxRepository) Update(ctx context.Context, id int64, title, body string) (Note, error) {
+	const q = `
+		UPDATE notes SET title = $2, body = $3, updated_at = now()
+		WHERE id = $1
+		RETURNING id, user_id, title, body, created_at, updated_at`
+	var n Note
+	err := r.db.GetContext(ctx, &n, q, id, title, body)
+	return n, err
+}
+
+func (r *sqlxRepository) Delete(ctx context.Context, id int64) error {
+	const q = `DELETE FROM notes WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, q, id)
+	return err
+}

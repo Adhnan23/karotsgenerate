@@ -1,0 +1,21 @@
+-- +goose Up
+-- +goose StatementBegin
+CREATE TABLE notes (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+-- List queries always filter by owner and order by recency.
+CREATE INDEX idx_notes_user_id_created_at ON notes (user_id, created_at DESC);
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+DROP TABLE notes;
+-- +goose StatementEnd

@@ -1,0 +1,165 @@
+# go-learning — Fullstack Go Reference Project
+
+A small, **complete** example of a production-shaped Go web app you can clone and copy
+patterns from. The example domain (per-user **notes**) is intentionally tiny so the
+focus stays on the things that actually matter in real projects:
+
+- **Feature-based (vertical slice) structure** that scales as you add features
+- **Cookie-based JWT auth** done properly: short access token + rotating refresh token
+  (with reuse detection), all in HTTP-only cookies
+- **Two surfaces over one core**: a server-rendered **htmx** web UI *and* a JSON
+  **API** (documented with OpenAPI/Swagger) — both call the same service layer
+- **Embedding** (`//go:embed`) of migrations and static assets → a single binary
+- A dedicated **testing track**: unit (mock DB), integration (real Postgres), e2e
+
+## Stack
+
+Echo v4 · templ · htmx + Alpine.js · sqlx + pgx · Postgres 17 · goose (embedded) ·
+go-playground/validator · golang-jwt v5 · swaggo/Swagger UI · `log/slog`
+
+## Quick start
+
+```sh
+cp .env.example .env          # defaults match docker-compose (Postgres on :5432)
+make tools                    # install templ, swag, goose, air (one time)
+make db-up                    # start Postgres 17 (docker)
+make run                      # generate code, run migrations, serve on :8080
+# or, for live reload while developing:
+make dev                      # air: rebuilds + restarts on .go/.templ changes
+```
+
+Then open:
+
+| URL | What |
+|-----|------|
+| http://localhost:8080/        | redirects to the notes UI (login required) |
+| http://localhost:8080/login   | the htmx web app |
+| http://localhost:8080/swagger | Swagger UI for the JSON API |
+| http://localhost:8080/healthz | health check |
+
+> `make run` regenerates templ + swagger first. Generated files (`*_templ.go`,
+> `docs/swagger/`) are committed so a plain `go build ./...` also works after clone.
+
+## Architecture
+
+Code is grouped by **feature**, not by technical layer. Each feature folder owns its
+entire stack and registers its own routes. Adding a feature = add one folder; deleting
+one = delete one folder. Shared infrastructure lives under `internal/platform`.
+
+```
+cmd/web/                 entrypoint: load config, connect DB, migrate, serve
+internal/
+  app/                   wires everything (reused by main AND the e2e tests)
+  platform/              shared infra — NOT features
+    config/              env (+ .env) → typed Config
+    database/            sqlx connect + goose embedded-migration runner
+    httpserver/          Echo setup, global middleware, central error handler,
+                         CSRF + rate-limit, /healthz, graceful shutdown
+    render/              templ → Echo helpers; CSRF/redirect/error web helpers
+    validate/            go-playground/validator as echo.Validator
+    apperr/              transport-agnostic domain errors
+    logging/             slog + request-ID middleware
+  features/
+    auth/                register/login/refresh/logout; exports RequireAuth
+    note/                per-user note CRUD
+  shared/layout/         base.templ HTML shell
+web/static/              vendored htmx + Alpine + app.css (embedded)
+migrations/              goose .sql files (embedded)
+docs/                    this project's spec, task tracker, generated swagger
+e2e/                     end-to-end tests
+```
+
+### Anatomy of a feature
+
+Every feature follows the same shape:
+
+```
+features/note/
+  model.go         domain types + request/response DTOs (with validate tags)
+  repository.go    Repository INTERFACE + sqlx implementation
+  service.go       business rules (ownership, pagination) — the single source of truth
+  web_handler.go   HTML surface (htmx + templ)
+  api_handler.go   JSON surface (OpenAPI-annotated)  ← same service as web_handler
+  views.templ      templ components (colocated to use the feature's own types)
+  module.go        Module: holds deps, Mount(group) registers all routes
+```
+
+The key idea: **the service is the single source of truth**; the two handlers are
+interchangeable delivery mechanisms over it. The web UI and the JSON API can never
+drift apart because they run the same code.
+
+### How modules plug in
+
+Every feature exposes one method:
+
+```go
+func (m *Module) Mount(root *echo.Group)   // registers its own routes
+```
+
+`internal/app/Build` constructs shared dependencies once, builds each feature module,
+and mounts it. The **auth feature exports `RequireAuth` / `RequireAuthWeb`**, which the
+note feature receives as injected middleware — the one deliberate cross-feature link,
+made explicit rather than hidden.
+
+## Authentication flow
+
+```
+register ─► bcrypt-hash password ─► store user
+login    ─► verify password ─► issue ACCESS (JWT, ~15m) + REFRESH (JWT, ~7d)
+            both set as HttpOnly, SameSite=Lax cookies
+            refresh token's SHA-256 hash stored in refresh_tokens (never the token)
+request  ─► RequireAuth verifies the access cookie, puts user id+email on context
+refresh  ─► verify refresh cookie ─► check hash is active in DB
+            ─► REVOKE old + issue new pair (rotation)
+            ─► if a REVOKED token is presented → reuse! revoke the whole chain
+logout   ─► revoke refresh token, clear both cookies
+```
+
+Why these choices:
+- **HttpOnly cookies** keep tokens unreadable by JavaScript (mitigates XSS theft).
+- **Storing only the hash** means a DB leak can't be used to forge sessions.
+- **Rotation + reuse detection** limits the damage of a stolen refresh token.
+- **CSRF middleware** protects the cookie-based web forms; the JSON API is exempt
+  (it's for non-browser clients) and relies on `SameSite=Lax`.
+
+## How to add a feature
+
+1. `mkdir internal/features/<name>` and create `model.go`, `repository.go`,
+   `service.go`, `module.go`, plus `api_handler.go` / `web_handler.go` / `views.templ`
+   as needed (copy the `note` feature as a template).
+2. Define `Repository` as an **interface** so the service is unit-testable.
+3. If the feature needs auth, accept `echo.MiddlewareFunc` guards in `NewModule`.
+4. Add a migration: `make migrate-create name=add_<name>`.
+5. Construct + mount the module in `internal/app/Build`.
+6. `make run`.
+
+## Testing
+
+Three styles, each teaching a different lesson. See `docs/superpowers/specs/` for the
+rationale.
+
+```sh
+make test              # unit tests only — fast, no database
+make test-integration  # repository tests against real Postgres (needs `make db-up`)
+make test-e2e          # full app booted in-process, driven over HTTP
+make test-all          # everything
+```
+
+- **Unit** (`internal/features/note/service_test.go`): the service is tested with a
+  **hand-written mock repository** (a struct with function fields). No framework, no
+  DB — the mock mechanism is fully visible. Tests ownership rules and pagination math.
+- **Integration** (`note/repository_test.go`, build tag `integration`): the **real SQL**
+  runs against a **real Postgres**, catching what a mock can't — constraints,
+  `RETURNING`, NULLs, FK cascades, ordering.
+- **E2E** (`e2e/`, build tag `e2e`): boots the **whole app** (`app.Build`) with
+  `httptest`, then drives it with an `http.Client` + cookie jar — asserting HTTP-only
+  cookies, refresh rotation, logout invalidation, and per-user data scoping.
+
+## Make targets
+
+Run `make help` for the full list (db, migrations, codegen, build, test, lint).
+
+## Configuration
+
+All config comes from environment variables (a local `.env` is auto-loaded in dev).
+See `.env.example` for every variable and its default.

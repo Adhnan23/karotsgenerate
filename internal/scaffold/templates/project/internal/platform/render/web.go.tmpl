@@ -1,0 +1,43 @@
+package render
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// CSRFToken returns the token Echo's CSRF middleware stored in the context, or "" if
+// the middleware isn't active. Templates handle the empty case gracefully.
+func CSRFToken(c echo.Context) string {
+	if t, ok := c.Get("csrf").(string); ok {
+		return t
+	}
+	return ""
+}
+
+// IsHTMX reports whether the request came from htmx (vs a plain browser navigation).
+func IsHTMX(c echo.Context) bool {
+	return c.Request().Header.Get("HX-Request") == "true"
+}
+
+// Redirect navigates the browser. For htmx requests it uses the HX-Redirect response
+// header (so a swap target triggers a full navigation); otherwise a 303 redirect.
+func Redirect(c echo.Context, to string) error {
+	if IsHTMX(c) {
+		c.Response().Header().Set("HX-Redirect", to)
+		return c.NoContent(http.StatusOK)
+	}
+	return c.Redirect(http.StatusSeeOther, to)
+}
+
+// ErrorMessage extracts a user-safe message from a domain error, with a fallback.
+func ErrorMessage(err error) string {
+	var appErr *apperr.Error
+	if errors.As(err, &appErr) {
+		return appErr.Message
+	}
+	return "Something went wrong. Please try again."
+}

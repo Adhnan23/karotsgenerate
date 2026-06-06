@@ -1,0 +1,113 @@
+package auth
+
+import (
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+)
+
+// messageResponse is a simple JSON acknowledgement body.
+type messageResponse struct {
+	Message string `json:"message"`
+}
+
+// apiRegister godoc
+//
+//	@Summary	Register a new account
+//	@Tags		auth
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body		RegisterRequest	true	"credentials"
+//	@Success	201		{object}	UserResponse
+//	@Failure	400		{object}	map[string]any	"validation error"
+//	@Failure	409		{object}	map[string]any	"email already registered"
+//	@Router		/auth/register [post]
+func (m *Module) apiRegister(c echo.Context) error {
+	var req RegisterRequest
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	user, err := m.svc.Register(c.Request().Context(), req.Email, req.Password)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusCreated, user.ToResponse())
+}
+
+// apiLogin godoc
+//
+//	@Summary	Log in and receive auth cookies
+//	@Description	On success, sets HTTP-only access_token and refresh_token cookies.
+//	@Tags		auth
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body		LoginRequest	true	"credentials"
+//	@Success	200		{object}	UserResponse
+//	@Failure	401		{object}	map[string]any	"invalid credentials"
+//	@Router		/auth/login [post]
+func (m *Module) apiLogin(c echo.Context) error {
+	var req LoginRequest
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	user, pair, err := m.svc.Login(c.Request().Context(), req.Email, req.Password)
+	if err != nil {
+		return err
+	}
+	m.tokens.SetAuthCookies(c, pair.Access, pair.Refresh)
+	return c.JSON(http.StatusOK, user.ToResponse())
+}
+
+// apiRefresh godoc
+//
+//	@Summary	Rotate tokens using the refresh cookie
+//	@Description	Reads the refresh_token cookie, rotates it, and sets fresh cookies.
+//	@Tags		auth
+//	@Produce	json
+//	@Success	200	{object}	messageResponse
+//	@Failure	401	{object}	map[string]any	"missing or invalid refresh token"
+//	@Router		/auth/refresh [post]
+func (m *Module) apiRefresh(c echo.Context) error {
+	pair, err := m.refreshFromCookie(c)
+	if err != nil {
+		return err
+	}
+	m.tokens.SetAuthCookies(c, pair.Access, pair.Refresh)
+	return c.JSON(http.StatusOK, messageResponse{Message: "tokens refreshed"})
+}
+
+// apiLogout godoc
+//
+//	@Summary	Log out (revoke refresh token, clear cookies)
+//	@Tags		auth
+//	@Success	204	"no content"
+//	@Router		/auth/logout [post]
+func (m *Module) apiLogout(c echo.Context) error {
+	m.logoutFromCookie(c)
+	return c.NoContent(http.StatusNoContent)
+}
+
+// --- shared cookie helpers used by both surfaces ---
+
+// refreshFromCookie reads the refresh cookie and rotates the token pair.
+func (m *Module) refreshFromCookie(c echo.Context) (TokenPair, error) {
+	cookie, err := c.Cookie(refreshCookieName)
+	if err != nil || cookie.Value == "" {
+		return TokenPair{}, echo.NewHTTPError(http.StatusUnauthorized, "missing refresh token")
+	}
+	return m.svc.Refresh(c.Request().Context(), cookie.Value)
+}
+
+// logoutFromCookie revokes the refresh token (if present) and clears both cookies.
+func (m *Module) logoutFromCookie(c echo.Context) {
+	if cookie, err := c.Cookie(refreshCookieName); err == nil {
+		_ = m.svc.Logout(c.Request().Context(), cookie.Value)
+	}
+	m.tokens.ClearAuthCookies(c)
+}

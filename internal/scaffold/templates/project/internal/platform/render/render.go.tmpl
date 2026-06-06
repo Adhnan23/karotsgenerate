@@ -1,0 +1,26 @@
+// Package render bridges templ components and Echo responses.
+//
+// templ components implement templ.Component (a Render(ctx, io.Writer) method).
+// Echo handlers return HTML by calling render.Component / render.Partial instead of
+// touching the ResponseWriter directly.
+package render
+
+import (
+	"net/http"
+
+	"github.com/a-h/templ"
+	"github.com/labstack/echo/v4"
+)
+
+// Component renders a full templ component with the given HTTP status.
+func Component(c echo.Context, status int, comp templ.Component) error {
+	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+	c.Response().WriteHeader(status)
+	return comp.Render(c.Request().Context(), c.Response().Writer)
+}
+
+// Partial renders a templ component with 200 OK. Use for htmx partial swaps where
+// the status is always fine and only the fragment matters.
+func Partial(c echo.Context, comp templ.Component) error {
+	return Component(c, http.StatusOK, comp)
+}

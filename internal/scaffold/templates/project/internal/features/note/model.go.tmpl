@@ -1,0 +1,97 @@
+package note
+
+import "time"
+
+// Note is the domain/DB representation of a user's note.
+type Note struct {
+	ID        int64     `db:"id"`
+	UserID    int64     `db:"user_id"`
+	Title     string    `db:"title"`
+	Body      string    `db:"body"`
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+}
+
+// --- Request DTOs (validated via struct tags) ---
+
+// CreateNoteRequest is the body for creating a note.
+type CreateNoteRequest struct {
+	Title string `json:"title" form:"title" validate:"required,max=200"`
+	Body  string `json:"body" form:"body" validate:"max=10000"`
+}
+
+// UpdateNoteRequest is the body for updating a note.
+type UpdateNoteRequest struct {
+	Title string `json:"title" form:"title" validate:"required,max=200"`
+	Body  string `json:"body" form:"body" validate:"max=10000"`
+}
+
+// --- Response DTOs ---
+
+// NoteResponse is the public JSON view of a note.
+type NoteResponse struct {
+	ID        int64     `json:"id"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ToResponse converts a Note to its public representation.
+func (n Note) ToResponse() NoteResponse {
+	return NoteResponse{
+		ID: n.ID, Title: n.Title, Body: n.Body,
+		CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt,
+	}
+}
+
+// --- Pagination ---
+
+const (
+	defaultPageSize = 10
+	maxPageSize     = 100
+)
+
+// PageParams holds normalized pagination input.
+type PageParams struct {
+	Page int `query:"page"` // 1-based
+	Size int `query:"size"`
+}
+
+// Normalize clamps page/size into sane bounds, applying defaults.
+func (p PageParams) Normalize() PageParams {
+	if p.Page < 1 {
+		p.Page = 1
+	}
+	if p.Size < 1 {
+		p.Size = defaultPageSize
+	}
+	if p.Size > maxPageSize {
+		p.Size = maxPageSize
+	}
+	return p
+}
+
+// Limit and Offset translate page/size into SQL LIMIT/OFFSET.
+func (p PageParams) Limit() int  { return p.Size }
+func (p PageParams) Offset() int { return (p.Page - 1) * p.Size }
+
+// Page is a paginated result set of notes plus the metadata clients need to render
+// pagination controls.
+type Page struct {
+	Items   []Note `json:"items"`
+	Page    int    `json:"page"`
+	Size    int    `json:"size"`
+	Total   int    `json:"total"`
+	HasNext bool   `json:"has_next"`
+	HasPrev bool   `json:"has_prev"`
+}
+
+// NoteResponses converts the page items to public DTOs (for the JSON API).
+func (p Page) NoteResponses() []NoteResponse {
+	out := make([]NoteResponse, len(p.Items))
+	for i, n := range p.Items {
+		out[i] = n.ToResponse()
+	}
+	return out
+}

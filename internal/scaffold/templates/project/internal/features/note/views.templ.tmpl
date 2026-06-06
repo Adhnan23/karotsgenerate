@@ -1,0 +1,96 @@
+package note
+
+// Views colocated in the feature package so they can use Note/Page directly. The
+// list page renders the create form plus a paginated list; htmx swaps individual
+// fragments (new note prepended, deleted note removed) without full page reloads.
+
+import (
+	"fmt"
+
+	"[[.ModulePath]]/internal/shared/layout"
+)
+
+templ NotesPage(csrf, userEmail string, page Page) {
+	@layout.Base("Notes", userEmail, csrf) {
+		<h1>Your notes</h1>
+		@CreateNoteForm(csrf)
+		@NoteList(page.Items)
+		@Pagination(page)
+	}
+}
+
+// CreateNoteForm posts to /notes; on success the server returns a NoteItem which is
+// prepended to #note-list, and the form resets itself.
+templ CreateNoteForm(csrf string) {
+	<form
+		class="note-form"
+		hx-post="/notes"
+		hx-target="#note-list"
+		hx-swap="afterbegin"
+		hx-on::after-request="if(event.detail.successful) { this.reset(); this.dispatchEvent(new Event('reset-counter')); }"
+	>
+		<input type="hidden" name="_csrf" value={ csrf }/>
+		<input type="text" name="title" placeholder="Title" maxlength="200" required/>
+		<!-- Alpine handles the purely-local character counter; the server never needs
+		     to know about it. htmx handles the actual submit/swap. -->
+		<div x-data="{ count: 0 }" x-on:reset-counter="count = 0">
+			<textarea
+				name="body"
+				placeholder="Write something…"
+				rows="3"
+				maxlength="10000"
+				x-on:input="count = $event.target.value.length"
+			></textarea>
+			<p class="counter"><span x-text="count"></span> / 10000</p>
+		</div>
+		<button type="submit">Add note</button>
+	</form>
+}
+
+// NoteList is the container fragment (also targeted on create).
+templ NoteList(notes []Note) {
+	<div id="note-list" class="note-list">
+		if len(notes) == 0 {
+			<p class="muted" id="empty-state">No notes yet. Add your first above.</p>
+		}
+		for _, n := range notes {
+			@NoteItem(n)
+		}
+	</div>
+}
+
+// NoteItem is one note card with a delete button. Deleting swaps the card's own
+// outer HTML with the server's empty response, removing it from the DOM.
+templ NoteItem(n Note) {
+	<article class="note" id={ fmt.Sprintf("note-%d", n.ID) }>
+		<h3>{ n.Title }</h3>
+		if n.Body != "" {
+			<p>{ n.Body }</p>
+		}
+		<footer>
+			<time>{ n.CreatedAt.Format("2006-01-02 15:04") }</time>
+			<button
+				class="link danger"
+				hx-delete={ fmt.Sprintf("/notes/%d", n.ID) }
+				hx-target={ fmt.Sprintf("#note-%d", n.ID) }
+				hx-swap="outerHTML"
+				hx-confirm="Delete this note?"
+			>Delete</button>
+		</footer>
+	</article>
+}
+
+// Pagination renders prev/next controls when there's more than one page.
+templ Pagination(p Page) {
+	if p.HasPrev || p.HasNext {
+		<nav class="pagination">
+			if p.HasPrev {
+				<a href={ templ.SafeURL(fmt.Sprintf("/notes?page=%d&size=%d", p.Page-1, p.Size)) }>← Prev</a>
+			}
+			<span>Page { fmt.Sprintf("%d", p.Page) }</span>
+			if p.HasNext {
+				<a href={ templ.SafeURL(fmt.Sprintf("/notes?page=%d&size=%d", p.Page+1, p.Size)) }>Next →</a>
+			}
+		</nav>
+	}
+}

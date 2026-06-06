@@ -1,0 +1,130 @@
+//go:build e2e
+
+// Package e2e holds end-to-end tests that boot the FULL application (every feature,
+// middleware, real DB) via app.Build, expose it with httptest, and drive it over real
+// HTTP with a cookie jar — exactly as a client would. Build-tagged `e2e`; run with
+// `make test-e2e` (needs `make db-up`).
+package e2e
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strconv"
+	"testing"
+	"time"
+
+	"[[.ModulePath]]/internal/app"
+	"[[.ModulePath]]/internal/platform/config"
+	"[[.ModulePath]]/internal/platform/database"
+)
+
+// client wraps an http.Client + base URL with a tiny JSON helper.
+type client struct {
+	t    *testing.T
+	base string
+	http *http.Client
+}
+
+// newClient boots the app against the test DB and returns a client with a cookie jar.
+// Skips the test if TEST_DATABASE_URL is unset.
+func newClient(t *testing.T) *client {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping e2e tests (run `make db-up`)")
+	}
+
+	db, err := database.Connect(t.Context(), url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := database.Migrate(t.Context(), db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	db.MustExec(`TRUNCATE users, notes, refresh_tokens RESTART IDENTITY CASCADE`)
+
+	cfg := config.Config{
+		Env:             "test",
+		Port:            "0",
+		BaseURL:         "http://test",
+		DatabaseURL:     url,
+		JWTSecret:       []byte("test-secret-at-least-16-bytes-long"),
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 168 * time.Hour,
+		AuthRateLimit:   100000, // effectively disabled so tests aren't throttled
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	srv := app.Build(cfg, logger, db)
+	ts := httptest.NewServer(srv.Echo())
+	t.Cleanup(ts.Close)
+
+	jar, _ := cookiejar.New(nil)
+	return &client{t: t, base: ts.URL, http: &http.Client{Jar: jar}}
+}
+
+// do sends a JSON request and returns the response. The caller closes nothing; the
+// body is read+closed here and returned decoded into out (if non-nil).
+func (c *client) do(method, path string, body any, out any) *http.Response {
+	c.t.Helper()
+	var reader io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		reader = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, c.base+path, reader)
+	if err != nil {
+		c.t.Fatalf("new request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if out != nil && len(data) > 0 {
+		if err := json.Unmarshal(data, out); err != nil {
+			c.t.Fatalf("decode %s %s (%q): %v", method, path, string(data), err)
+		}
+	}
+	return resp
+}
+
+// cookie returns the named cookie currently held by the jar, or nil.
+func (c *client) cookie(name string) *http.Cookie {
+	for _, ck := range c.http.Jar.Cookies(mustParse(c.t, c.base)) {
+		if ck.Name == name {
+			return ck
+		}
+	}
+	return nil
+}
+
+func mustParse(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse url %q: %v", raw, err)
+	}
+	return u
+}
+
+// newJarClient returns a fresh http.Client with its own cookie jar (a distinct
+// "browser" / user session against the same server).
+func newJarClient() *http.Client {
+	jar, _ := cookiejar.New(nil)
+	return &http.Client{Jar: jar}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }

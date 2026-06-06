@@ -1,0 +1,98 @@
+// Package httpserver wires the Echo instance, global middleware, the central error
+// handler, health checks, module mounting, and graceful shutdown.
+package httpserver
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+
+	"[[.ModulePath]]/internal/platform/config"
+	"[[.ModulePath]]/internal/platform/logging"
+)
+
+// Module is the contract every feature implements. Mount registers the feature's
+// routes onto the provided root group. main.go constructs each module with its
+// dependencies and hands it to the server — features never import each other except
+// for the deliberate auth.RequireAuth dependency.
+type Module interface {
+	Mount(root *echo.Group)
+}
+
+// Server owns the Echo instance and the lifecycle.
+type Server struct {
+	echo   *echo.Echo
+	cfg    config.Config
+	logger *slog.Logger
+}
+
+// New builds the server with global middleware and the central error handler.
+func New(cfg config.Config, logger *slog.Logger, db *sqlx.DB) *Server {
+	e := echo.New()
+	e.HideBanner = true
+	e.HTTPErrorHandler = errorHandler(logger)
+
+	// Global middleware. Order matters: RequestID before the logger so the logger
+	// can read the id; Recover early so panics become 500s, not crashes.
+	e.Use(middleware.Recover())
+	e.Use(middleware.RequestID())
+	e.Use(logging.RequestLogger(logger))
+	e.Use(csrfMiddleware(cfg))   // protects web forms; skips /api, /static, /swagger
+	e.Use(authRateLimiter(cfg))  // throttles /auth/* per IP
+
+	s := &Server{echo: e, cfg: cfg, logger: logger}
+	s.registerOps(db)
+	return s
+}
+
+// Echo exposes the underlying instance (used by main.go to register the Validator,
+// static assets, and the Swagger route).
+func (s *Server) Echo() *echo.Echo { return s.echo }
+
+// Config exposes config to main.go for module construction.
+func (s *Server) Config() config.Config { return s.cfg }
+
+// Mount registers every feature module on the root group.
+func (s *Server) Mount(modules ...Module) {
+	root := s.echo.Group("")
+	for _, m := range modules {
+		m.Mount(root)
+	}
+}
+
+// registerOps adds operational endpoints that aren't features.
+func (s *Server) registerOps(db *sqlx.DB) {
+	s.echo.GET("/healthz", func(c echo.Context) error {
+		ctx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"status": "down"})
+		}
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+}
+
+// Run starts the HTTP server and blocks until ctx is cancelled (e.g. SIGINT), then
+// shuts down gracefully within a timeout.
+func (s *Server) Run(ctx context.Context) error {
+	go func() {
+		addr := ":" + s.cfg.Port
+		s.logger.Info("http server listening", slog.String("addr", addr))
+		if err := s.echo.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Error("server stopped unexpectedly", slog.Any("error", err))
+		}
+	}()
+
+	<-ctx.Done()
+	s.logger.Info("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.echo.Shutdown(shutdownCtx)
+}

@@ -1,0 +1,53 @@
+package note
+
+import (
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/features/auth"
+	"[[.ModulePath]]/internal/platform/render"
+)
+
+func (m *Module) webList(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+
+	var params PageParams
+	_ = c.Bind(&params) // binds ?page= & ?size= from the query string
+	page, err := m.svc.List(c.Request().Context(), userID, params)
+	if err != nil {
+		return err
+	}
+	return render.Component(c, http.StatusOK, NotesPage(render.CSRFToken(c), auth.Email(c), page))
+}
+
+func (m *Module) webCreate(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+
+	var req CreateNoteRequest
+	_ = c.Bind(&req)
+	if err := c.Validate(&req); err != nil {
+		return err // central handler renders a 400; htmx leaves the list unchanged
+	}
+	n, err := m.svc.Create(c.Request().Context(), userID, req.Title, req.Body)
+	if err != nil {
+		return err
+	}
+	// Return just the new card; htmx prepends it to #note-list.
+	return render.Partial(c, NoteItem(n))
+}
+
+func (m *Module) webDelete(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	if err := m.svc.Delete(c.Request().Context(), userID, id); err != nil {
+		return err
+	}
+	// 200 with an empty body so htmx's outerHTML swap removes the card.
+	// (A 204 would tell htmx to skip the swap, leaving the card on screen.)
+	return c.HTML(http.StatusOK, "")
+}

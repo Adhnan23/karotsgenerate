@@ -1,0 +1,101 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jmoiron/sqlx"
+)
+
+// ErrEmailTaken is returned by CreateUser when the email already exists. The service
+// translates it into an apperr.Conflict.
+var ErrEmailTaken = errors.New("email already registered")
+
+// Repository is the data-access contract the auth service depends on. Defining it as
+// an interface (rather than a concrete type) is what lets the service be unit-tested
+// with a mock — see the testing track.
+type Repository interface {
+	CreateUser(ctx context.Context, email, passwordHash string) (User, error)
+	GetUserByEmail(ctx context.Context, email string) (User, error)
+	GetUserByID(ctx context.Context, id int64) (User, error)
+
+	StoreRefreshToken(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error
+	FindRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error)
+	RevokeRefreshToken(ctx context.Context, tokenHash string) error
+	RevokeAllUserTokens(ctx context.Context, userID int64) error
+}
+
+// sqlxRepository is the Postgres implementation.
+type sqlxRepository struct {
+	db *sqlx.DB
+}
+
+// NewRepository returns the sqlx-backed Repository.
+func NewRepository(db *sqlx.DB) Repository {
+	return &sqlxRepository{db: db}
+}
+
+func (r *sqlxRepository) CreateUser(ctx context.Context, email, passwordHash string) (User, error) {
+	const q = `
+		INSERT INTO users (email, password_hash)
+		VALUES ($1, $2)
+		RETURNING id, email, password_hash, created_at`
+	var u User
+	if err := r.db.GetContext(ctx, &u, q, email, passwordHash); err != nil {
+		if isUniqueViolation(err) {
+			return User{}, ErrEmailTaken
+		}
+		return User{}, err
+	}
+	return u, nil
+}
+
+func (r *sqlxRepository) GetUserByEmail(ctx context.Context, email string) (User, error) {
+	const q = `SELECT id, email, password_hash, created_at FROM users WHERE email = $1`
+	var u User
+	err := r.db.GetContext(ctx, &u, q, email)
+	return u, err // sql.ErrNoRows bubbles up; service maps it
+}
+
+func (r *sqlxRepository) GetUserByID(ctx context.Context, id int64) (User, error) {
+	const q = `SELECT id, email, password_hash, created_at FROM users WHERE id = $1`
+	var u User
+	err := r.db.GetContext(ctx, &u, q, id)
+	return u, err
+}
+
+func (r *sqlxRepository) StoreRefreshToken(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error {
+	const q = `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`
+	_, err := r.db.ExecContext(ctx, q, userID, tokenHash, expiresAt)
+	return err
+}
+
+func (r *sqlxRepository) FindRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error) {
+	const q = `
+		SELECT id, user_id, token_hash, expires_at, revoked_at, created_at
+		FROM refresh_tokens WHERE token_hash = $1`
+	var t RefreshToken
+	err := r.db.GetContext(ctx, &t, q, tokenHash)
+	return t, err
+}
+
+func (r *sqlxRepository) RevokeRefreshToken(ctx context.Context, tokenHash string) error {
+	const q = `UPDATE refresh_tokens SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL`
+	_, err := r.db.ExecContext(ctx, q, tokenHash)
+	return err
+}
+
+func (r *sqlxRepository) RevokeAllUserTokens(ctx context.Context, userID int64) error {
+	const q = `UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`
+	_, err := r.db.ExecContext(ctx, q, userID)
+	return err
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint violation
+// (SQLSTATE 23505). This is how you detect a duplicate insert with pgx.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}

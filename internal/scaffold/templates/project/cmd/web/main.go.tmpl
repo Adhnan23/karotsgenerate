@@ -1,0 +1,55 @@
+// Command web is the application entrypoint. It loads configuration, connects to the
+// database, runs embedded migrations, builds the wired server, and serves until
+// interrupted. The server wiring itself lives in internal/app so tests can reuse it.
+//
+//	@title			Go Fullstack Reference API
+//	@version		1.0
+//	@description	JSON API for the go-learning reference project (auth + notes).
+//	@BasePath		/api/v1
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"[[.ModulePath]]/internal/app"
+	"[[.ModulePath]]/internal/platform/config"
+	"[[.ModulePath]]/internal/platform/database"
+	"[[.ModulePath]]/internal/platform/logging"
+)
+
+func main() {
+	if err := run(); err != nil {
+		slog.Error("fatal", slog.Any("error", err))
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	logger := logging.New(cfg.IsProduction())
+
+	// Cancel the root context on SIGINT/SIGTERM for graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	db, err := database.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := database.Migrate(ctx, db); err != nil {
+		return err
+	}
+	logger.Info("migrations applied")
+
+	return app.Build(cfg, logger, db).Run(ctx)
+}

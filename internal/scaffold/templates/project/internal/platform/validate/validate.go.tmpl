@@ -1,0 +1,36 @@
+// Package validate adapts go-playground/validator to Echo's Validator interface so
+// handlers can call c.Validate(dto) and get struct-tag-driven validation.
+package validate
+
+import (
+	"github.com/go-playground/validator/v10"
+	"github.com/labstack/echo/v4"
+)
+
+// Validator implements echo.Validator. Register it once on the Echo instance:
+//
+//	e.Validator = validate.New()
+//
+// Then in a handler, after binding:
+//
+//	if err := c.Validate(&req); err != nil { return err }
+//
+// validator returns a validator.ValidationErrors on failure; the central error
+// handler turns that into a 400 with field details.
+type Validator struct {
+	v *validator.Validate
+}
+
+// New constructs a Validator. WithRequiredStructEnabled is the modern,
+// recommended validator behavior.
+func New() *Validator {
+	return &Validator{v: validator.New(validator.WithRequiredStructEnabled())}
+}
+
+// Validate runs struct-tag validation, satisfying echo.Validator.
+func (val *Validator) Validate(i any) error {
+	return val.v.Struct(i)
+}
+
+// Ensure we satisfy the interface at compile time.
+var _ echo.Validator = (*Validator)(nil)

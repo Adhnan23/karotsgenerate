@@ -1,0 +1,63 @@
+package httpserver
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	"golang.org/x/time/rate"
+
+	"[[.ModulePath]]/internal/platform/config"
+)
+
+// csrfMiddleware protects state-changing WEB requests. It's skipped for the JSON API
+// (/api/*), Swagger, static assets, and health — the API is meant for non-browser
+// clients and relies on the SameSite=Lax cookie attribute instead.
+//
+// The token is exposed two ways so both htmx and plain forms work:
+//   - header "X-CSRF-Token" (htmx sends it via the configRequest hook in base.templ)
+//   - form field "_csrf" (the plain logout form posts it)
+func csrfMiddleware(cfg config.Config) echo.MiddlewareFunc {
+	return middleware.CSRFWithConfig(middleware.CSRFConfig{
+		TokenLookup:    "header:X-CSRF-Token,form:_csrf",
+		ContextKey:     "csrf", // render.CSRFToken reads this
+		CookieName:     "_csrf",
+		CookiePath:     "/",
+		CookieHTTPOnly: false, // must be readable so the token can round-trip; this
+		// is the CSRF cookie, not a session token.
+		CookieSecure:   cfg.IsProduction(),
+		CookieSameSite: http.SameSiteLaxMode,
+		Skipper:        skipNonBrowser,
+	})
+}
+
+// authRateLimiter throttles the auth endpoints (login/register/refresh) per client IP
+// to slow credential stuffing. All other routes are skipped.
+func authRateLimiter(cfg config.Config) echo.MiddlewareFunc {
+	perSecond := rate.Limit(float64(cfg.AuthRateLimit) / 60.0)
+	return middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Skipper: func(c echo.Context) bool { return !isAuthPath(c.Path()) },
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(
+			middleware.RateLimiterMemoryStoreConfig{
+				Rate:  perSecond,
+				Burst: cfg.AuthRateLimit, // allow a short burst up to the per-minute cap
+			},
+		),
+		IdentifierExtractor: func(c echo.Context) (string, error) { return c.RealIP(), nil },
+	})
+}
+
+// skipNonBrowser reports whether CSRF protection should be skipped for this path.
+func skipNonBrowser(c echo.Context) bool {
+	p := c.Path()
+	return strings.HasPrefix(p, "/api/") ||
+		strings.HasPrefix(p, "/swagger") ||
+		strings.HasPrefix(p, "/static") ||
+		p == "/healthz"
+}
+
+// isAuthPath reports whether a path is one of the rate-limited auth endpoints.
+func isAuthPath(p string) bool {
+	return strings.HasPrefix(p, "/api/v1/auth") || p == "/login" || p == "/register"
+}

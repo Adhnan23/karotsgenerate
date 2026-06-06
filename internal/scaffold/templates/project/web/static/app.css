@@ -1,0 +1,78 @@
+/* Minimal, dependency-free styling for the reference app. */
+:root {
+	--bg: #0f1115;
+	--panel: #171a21;
+	--text: #e6e8eb;
+	--muted: #9aa3af;
+	--accent: #6ea8fe;
+	--danger: #f87171;
+	--border: #262b34;
+	--radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+	background: var(--bg);
+	color: var(--text);
+	line-height: 1.5;
+}
+
+.nav {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 1rem 1.5rem;
+	border-bottom: 1px solid var(--border);
+}
+.nav .brand { font-weight: 700; color: var(--text); text-decoration: none; }
+.nav nav { display: flex; align-items: center; gap: 1rem; }
+.nav a { color: var(--accent); text-decoration: none; }
+.nav .user { color: var(--muted); font-size: .9rem; }
+
+.container { max-width: 44rem; margin: 2rem auto; padding: 0 1.5rem; }
+
+h1 { font-size: 1.5rem; }
+
+label { display: block; margin: .75rem 0; color: var(--muted); font-size: .9rem; }
+input, textarea {
+	width: 100%;
+	margin-top: .25rem;
+	padding: .6rem .7rem;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text);
+	font: inherit;
+}
+input:focus, textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+button {
+	padding: .55rem 1rem;
+	background: var(--accent);
+	color: #0b1020;
+	border: none;
+	border-radius: var(--radius);
+	font-weight: 600;
+	cursor: pointer;
+}
+button:hover { filter: brightness(1.05); }
+.link { background: none; color: var(--accent); padding: 0; font-weight: 500; }
+.link.danger { color: var(--danger); }
+.inline { display: inline; }
+
+.error { color: var(--danger); background: rgba(248,113,113,.1); padding: .5rem .7rem; border-radius: var(--radius); }
+.muted { color: var(--muted); }
+.counter { color: var(--muted); font-size: .8rem; text-align: right; }
+
+.note-form { background: var(--panel); padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 1.5rem; }
+.note-list { display: flex; flex-direction: column; gap: 1rem; }
+.note { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+.note h3 { margin: 0 0 .25rem; }
+.note p { margin: .25rem 0; }
+.note footer { display: flex; justify-content: space-between; align-items: center; margin-top: .5rem; color: var(--muted); font-size: .8rem; }
+
+.pagination { display: flex; gap: 1rem; align-items: center; justify-content: center; margin-top: 1.5rem; }
+.pagination a { color: var(--accent); text-decoration: none; }

@@ -1,0 +1,138 @@
+package auth
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/labstack/echo/v4"
+)
+
+// Token types embedded in the JWT so an access token can't be used where a refresh
+// token is expected (and vice-versa).
+const (
+	tokenTypeAccess  = "access"
+	tokenTypeRefresh = "refresh"
+)
+
+// Cookie names. Both are HTTP-only so JavaScript (and thus XSS) can't read them.
+const (
+	accessCookieName  = "access_token"
+	refreshCookieName = "refresh_token"
+)
+
+// Claims are the JWT claims we sign. UserID is the subject; Type distinguishes
+// access vs refresh tokens. Email is carried so middleware can populate the request
+// context without a per-request DB lookup.
+type Claims struct {
+	jwt.RegisteredClaims
+	UserID int64  `json:"uid"`
+	Email  string `json:"email"`
+	Type   string `json:"typ"`
+}
+
+// TokenService issues and verifies JWTs and manages the auth cookies.
+type TokenService struct {
+	secret     []byte
+	accessTTL  time.Duration
+	refreshTTL time.Duration
+	secure     bool // set Secure flag on cookies (true in production / HTTPS)
+}
+
+// NewTokenService constructs the service. secure should be true when served over
+// HTTPS so cookies aren't sent over plaintext.
+func NewTokenService(secret []byte, accessTTL, refreshTTL time.Duration, secure bool) *TokenService {
+	return &TokenService{secret: secret, accessTTL: accessTTL, refreshTTL: refreshTTL, secure: secure}
+}
+
+// IssueAccess returns a signed short-lived access token for the user.
+func (ts *TokenService) IssueAccess(userID int64, email string) (string, error) {
+	return ts.sign(userID, email, tokenTypeAccess, ts.accessTTL)
+}
+
+// IssueRefresh returns a signed long-lived refresh token plus its expiry. The caller
+// stores HashToken(token) in the DB.
+func (ts *TokenService) IssueRefresh(userID int64, email string) (token string, expiresAt time.Time, err error) {
+	expiresAt = time.Now().Add(ts.refreshTTL)
+	token, err = ts.sign(userID, email, tokenTypeRefresh, ts.refreshTTL)
+	return token, expiresAt, err
+}
+
+func (ts *TokenService) sign(userID int64, email, typ string, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   fmt.Sprintf("%d", userID),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			// A random ID makes each token unique, so two refresh tokens issued in
+			// the same second hash differently.
+			ID: randomID(),
+		},
+		UserID: userID,
+		Email:  email,
+		Type:   typ,
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(ts.secret)
+}
+
+// parse verifies the signature + expiry and checks the token type.
+func (ts *TokenService) parse(tokenStr, expectedType string) (*Claims, error) {
+	claims := &Claims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return ts.secret, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if claims.Type != expectedType {
+		return nil, fmt.Errorf("expected %s token, got %s", expectedType, claims.Type)
+	}
+	return claims, nil
+}
+
+// --- Cookie helpers ---
+
+// SetAuthCookies writes both tokens as HTTP-only cookies on the response.
+func (ts *TokenService) SetAuthCookies(c echo.Context, access, refresh string) {
+	c.SetCookie(ts.cookie(accessCookieName, access, ts.accessTTL))
+	c.SetCookie(ts.cookie(refreshCookieName, refresh, ts.refreshTTL))
+}
+
+// ClearAuthCookies expires both cookies (used on logout).
+func (ts *TokenService) ClearAuthCookies(c echo.Context) {
+	c.SetCookie(ts.cookie(accessCookieName, "", -time.Hour))
+	c.SetCookie(ts.cookie(refreshCookieName, "", -time.Hour))
+}
+
+func (ts *TokenService) cookie(name, value string, ttl time.Duration) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,                 // not readable by JS — mitigates XSS token theft
+		Secure:   ts.secure,            // only sent over HTTPS in production
+		SameSite: http.SameSiteLaxMode, // sent on top-level navigations, blocks most CSRF
+		Expires:  time.Now().Add(ttl),
+		MaxAge:   int(ttl.Seconds()),
+	}
+}
+
+// HashToken returns the hex SHA-256 of a token. We store this, never the token.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func randomID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}

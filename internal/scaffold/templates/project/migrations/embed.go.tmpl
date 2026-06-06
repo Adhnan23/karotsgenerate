@@ -1,0 +1,13 @@
+// Package migrations embeds the goose SQL migration files into the binary so the
+// app can run migrations on startup without the .sql files being present on disk.
+//
+// This is the "embed" lesson: //go:embed bakes the matching files into the compiled
+// program. FS is then handed to goose (see internal/platform/database/migrate.go).
+package migrations
+
+import "embed"
+
+// FS holds every .sql file in this directory, embedded at build time.
+//
+//go:embed *.sql
+var FS embed.FS

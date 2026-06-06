@@ -1,0 +1,139 @@
+package auth
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// Service holds the auth business logic. It depends on the Repository interface and
+// the TokenService — both injected, so it's fully unit-testable with a mock repo.
+type Service struct {
+	repo   Repository
+	tokens *TokenService
+}
+
+// NewService wires the service.
+func NewService(repo Repository, tokens *TokenService) *Service {
+	return &Service{repo: repo, tokens: tokens}
+}
+
+// TokenPair is the result of a successful login/refresh.
+type TokenPair struct {
+	Access  string
+	Refresh string
+}
+
+// Register creates a new account with a bcrypt-hashed password.
+func (s *Service) Register(ctx context.Context, email, password string) (User, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return User{}, apperr.Internal("could not hash password", err)
+	}
+	user, err := s.repo.CreateUser(ctx, email, string(hash))
+	if err != nil {
+		if errors.Is(err, ErrEmailTaken) {
+			return User{}, apperr.Conflict("email already registered")
+		}
+		return User{}, apperr.Internal("could not create user", err)
+	}
+	return user, nil
+}
+
+// Login verifies credentials and issues a fresh token pair, persisting the refresh
+// token's hash. We use the same "invalid credentials" message for unknown email and
+// wrong password so we don't leak which emails exist.
+func (s *Service) Login(ctx context.Context, email, password string) (User, TokenPair, error) {
+	user, err := s.repo.GetUserByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, TokenPair{}, apperr.Unauthorized("invalid email or password")
+		}
+		return User{}, TokenPair{}, apperr.Internal("lookup failed", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		return User{}, TokenPair{}, apperr.Unauthorized("invalid email or password")
+	}
+
+	pair, err := s.issuePair(ctx, user.ID, user.Email)
+	if err != nil {
+		return User{}, TokenPair{}, err
+	}
+	return user, pair, nil
+}
+
+// Refresh validates the presented refresh token, rotates it (old revoked, new issued),
+// and returns a new pair. If a *revoked* token is presented, that's a reuse signal:
+// we revoke every token for the user (defending against a stolen, already-rotated
+// token) and reject.
+func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, error) {
+	claims, err := s.tokens.parse(refreshToken, tokenTypeRefresh)
+	if err != nil {
+		return TokenPair{}, apperr.Unauthorized("invalid refresh token")
+	}
+
+	hash := HashToken(refreshToken)
+	stored, err := s.repo.FindRefreshToken(ctx, hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return TokenPair{}, apperr.Unauthorized("invalid refresh token")
+		}
+		return TokenPair{}, apperr.Internal("token lookup failed", err)
+	}
+
+	if !stored.IsActive(time.Now()) {
+		// Reuse detection: a revoked-but-presented token means it may have been
+		// stolen. Nuke the whole chain and force re-login.
+		if stored.RevokedAt != nil {
+			_ = s.repo.RevokeAllUserTokens(ctx, stored.UserID)
+		}
+		return TokenPair{}, apperr.Unauthorized("refresh token expired or revoked")
+	}
+
+	// Rotate: revoke the presented token, issue a new pair.
+	if err := s.repo.RevokeRefreshToken(ctx, hash); err != nil {
+		return TokenPair{}, apperr.Internal("could not rotate token", err)
+	}
+	return s.issuePair(ctx, claims.UserID, claims.Email)
+}
+
+// Logout revokes the presented refresh token (best-effort) so it can't be reused.
+func (s *Service) Logout(ctx context.Context, refreshToken string) error {
+	if refreshToken == "" {
+		return nil
+	}
+	return s.repo.RevokeRefreshToken(ctx, HashToken(refreshToken))
+}
+
+// CurrentUser loads a user by id (used to render the logged-in user's identity).
+func (s *Service) CurrentUser(ctx context.Context, id int64) (User, error) {
+	user, err := s.repo.GetUserByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, apperr.Unauthorized("account no longer exists")
+		}
+		return User{}, apperr.Internal("lookup failed", err)
+	}
+	return user, nil
+}
+
+// issuePair mints an access + refresh token and stores the refresh hash.
+func (s *Service) issuePair(ctx context.Context, userID int64, email string) (TokenPair, error) {
+	access, err := s.tokens.IssueAccess(userID, email)
+	if err != nil {
+		return TokenPair{}, apperr.Internal("could not issue access token", err)
+	}
+	refresh, expiresAt, err := s.tokens.IssueRefresh(userID, email)
+	if err != nil {
+		return TokenPair{}, apperr.Internal("could not issue refresh token", err)
+	}
+	if err := s.repo.StoreRefreshToken(ctx, userID, HashToken(refresh), expiresAt); err != nil {
+		return TokenPair{}, apperr.Internal("could not persist refresh token", err)
+	}
+	return TokenPair{Access: access, Refresh: refresh}, nil
+}

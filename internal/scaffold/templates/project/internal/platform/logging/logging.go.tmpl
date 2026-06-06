@@ -1,0 +1,54 @@
+// Package logging configures the application's structured logger (log/slog) and
+// provides HTTP middleware that tags every request with a request-ID and logs it.
+package logging
+
+import (
+	"log/slog"
+	"os"
+	"time"
+
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+)
+
+// New returns a slog.Logger. In production it emits JSON (machine-readable for log
+// aggregators); in development it emits human-readable text.
+func New(production bool) *slog.Logger {
+	var handler slog.Handler
+	if production {
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
+	}
+	return slog.New(handler)
+}
+
+// RequestLogger returns middleware that assigns a request-ID (via Echo's RequestID
+// middleware, which must be registered before this) and logs one structured line per
+// request with method, path, status, latency, and the request-ID.
+func RequestLogger(logger *slog.Logger) echo.MiddlewareFunc {
+	return middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogStatus:    true,
+		LogMethod:    true,
+		LogURI:       true,
+		LogLatency:   true,
+		LogRequestID: true,
+		LogError:     true,
+		HandleError:  true, // let the central error handler format the response
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			level := slog.LevelInfo
+			if v.Status >= 500 {
+				level = slog.LevelError
+			}
+			logger.LogAttrs(c.Request().Context(), level, "request",
+				slog.String("method", v.Method),
+				slog.String("uri", v.URI),
+				slog.Int("status", v.Status),
+				slog.Duration("latency", v.Latency.Round(time.Microsecond)),
+				slog.String("request_id", v.RequestID),
+				slog.Any("error", v.Error),
+			)
+			return nil
+		},
+	})
+}

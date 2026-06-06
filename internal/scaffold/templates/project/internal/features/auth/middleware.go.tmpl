@@ -1,0 +1,76 @@
+package auth
+
+import (
+	"net/http"
+
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// Context keys under which the authenticated identity is stored. Unexported so only
+// this package writes them; reads go through UserID / Email.
+const (
+	ctxUserIDKey = "auth.user_id"
+	ctxEmailKey  = "auth.email"
+)
+
+// UserID returns the authenticated user's id from the context. The bool is false if
+// the request didn't pass an auth middleware. Other features call this to scope data
+// to the current user.
+func UserID(c echo.Context) (int64, bool) {
+	id, ok := c.Get(ctxUserIDKey).(int64)
+	return id, ok
+}
+
+// Email returns the authenticated user's email from the context (carried in the JWT,
+// so no DB lookup). Empty string if not authenticated.
+func Email(c echo.Context) string {
+	email, _ := c.Get(ctxEmailKey).(string)
+	return email
+}
+
+// authenticate reads + verifies the access cookie and returns the claims.
+func (m *Module) authenticate(c echo.Context) (*Claims, bool) {
+	cookie, err := c.Cookie(accessCookieName)
+	if err != nil || cookie.Value == "" {
+		return nil, false
+	}
+	claims, err := m.tokens.parse(cookie.Value, tokenTypeAccess)
+	if err != nil {
+		return nil, false
+	}
+	return claims, true
+}
+
+// setIdentity stores the authenticated identity on the request context.
+func setIdentity(c echo.Context, claims *Claims) {
+	c.Set(ctxUserIDKey, claims.UserID)
+	c.Set(ctxEmailKey, claims.Email)
+}
+
+// RequireAuth is middleware for JSON API routes: on a missing/invalid access token it
+// returns 401. Exported so other features (e.g. note) can protect their API routes.
+func (m *Module) RequireAuth(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		claims, ok := m.authenticate(c)
+		if !ok {
+			return apperr.Unauthorized("authentication required")
+		}
+		setIdentity(c, claims)
+		return next(c)
+	}
+}
+
+// RequireAuthWeb is middleware for browser/web routes: on a missing/invalid access
+// token it redirects to the login page instead of returning a bare 401.
+func (m *Module) RequireAuthWeb(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		claims, ok := m.authenticate(c)
+		if !ok {
+			return c.Redirect(http.StatusSeeOther, "/login")
+		}
+		setIdentity(c, claims)
+		return next(c)
+	}
+}

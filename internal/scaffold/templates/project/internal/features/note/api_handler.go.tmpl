@@ -1,0 +1,161 @@
+package note
+
+import (
+	"net/http"
+	"strconv"
+
+	"github.com/labstack/echo/v4"
+
+	"[[.ModulePath]]/internal/features/auth"
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// listResponse is the JSON shape for a paginated notes list.
+type listResponse struct {
+	Items   []NoteResponse `json:"items"`
+	Page    int            `json:"page"`
+	Size    int            `json:"size"`
+	Total   int            `json:"total"`
+	HasNext bool           `json:"has_next"`
+	HasPrev bool           `json:"has_prev"`
+}
+
+// apiList godoc
+//
+//	@Summary	List the authenticated user's notes (paginated)
+//	@Tags		notes
+//	@Produce	json
+//	@Param		page	query		int	false	"page number (1-based)"
+//	@Param		size	query		int	false	"page size (max 100)"
+//	@Success	200		{object}	listResponse
+//	@Failure	401		{object}	map[string]any
+//	@Router		/notes [get]
+func (m *Module) apiList(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+
+	var params PageParams
+	_ = c.Bind(&params)
+	page, err := m.svc.List(c.Request().Context(), userID, params)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, listResponse{
+		Items:   page.NoteResponses(),
+		Page:    page.Page,
+		Size:    page.Size,
+		Total:   page.Total,
+		HasNext: page.HasNext,
+		HasPrev: page.HasPrev,
+	})
+}
+
+// apiCreate godoc
+//
+//	@Summary	Create a note
+//	@Tags		notes
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body		CreateNoteRequest	true	"note"
+//	@Success	201		{object}	NoteResponse
+//	@Failure	400		{object}	map[string]any
+//	@Failure	401		{object}	map[string]any
+//	@Router		/notes [post]
+func (m *Module) apiCreate(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+
+	var req CreateNoteRequest
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	n, err := m.svc.Create(c.Request().Context(), userID, req.Title, req.Body)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusCreated, n.ToResponse())
+}
+
+// apiGet godoc
+//
+//	@Summary	Get a single note by id
+//	@Tags		notes
+//	@Produce	json
+//	@Param		id	path		int	true	"note id"
+//	@Success	200	{object}	NoteResponse
+//	@Failure	404	{object}	map[string]any
+//	@Router		/notes/{id} [get]
+func (m *Module) apiGet(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	n, err := m.svc.Get(c.Request().Context(), userID, id)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, n.ToResponse())
+}
+
+// apiUpdate godoc
+//
+//	@Summary	Update a note
+//	@Tags		notes
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path		int					true	"note id"
+//	@Param		body	body		UpdateNoteRequest	true	"note"
+//	@Success	200		{object}	NoteResponse
+//	@Failure	404		{object}	map[string]any
+//	@Router		/notes/{id} [put]
+func (m *Module) apiUpdate(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	var req UpdateNoteRequest
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+	n, err := m.svc.Update(c.Request().Context(), userID, id, req.Title, req.Body)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, n.ToResponse())
+}
+
+// apiDelete godoc
+//
+//	@Summary	Delete a note
+//	@Tags		notes
+//	@Param		id	path	int	true	"note id"
+//	@Success	204	"no content"
+//	@Failure	404	{object}	map[string]any
+//	@Router		/notes/{id} [delete]
+func (m *Module) apiDelete(c echo.Context) error {
+	userID, _ := auth.UserID(c)
+	id, err := parseID(c)
+	if err != nil {
+		return err
+	}
+	if err := m.svc.Delete(c.Request().Context(), userID, id); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// parseID reads the :id path param as an int64, returning a validation error on bad
+// input. Shared by web + API handlers.
+func parseID(c echo.Context) (int64, error) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return 0, apperr.Validation("invalid note id")
+	}
+	return id, nil
+}

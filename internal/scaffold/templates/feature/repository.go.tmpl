@@ -1,0 +1,79 @@
+package [[.Lower]]
+
+import (
+	"context"
+
+	"github.com/jmoiron/sqlx"
+)
+
+// Repository is the data-access contract. Defined as an interface so the service can
+// be unit-tested with a mock (see service_test.go in the note feature for the pattern).
+type Repository interface {
+	Create(ctx context.Context, userID int64, title, body string) ([[.Title]], error)
+	GetByID(ctx context.Context, id int64) ([[.Title]], error)
+	ListByUser(ctx context.Context, userID int64, limit, offset int) ([][[.Title]], error)
+	CountByUser(ctx context.Context, userID int64) (int, error)
+	Update(ctx context.Context, id int64, title, body string) ([[.Title]], error)
+	Delete(ctx context.Context, id int64) error
+}
+
+type sqlxRepository struct {
+	db *sqlx.DB
+}
+
+// NewRepository returns the sqlx-backed Repository.
+func NewRepository(db *sqlx.DB) Repository {
+	return &sqlxRepository{db: db}
+}
+
+func (r *sqlxRepository) Create(ctx context.Context, userID int64, title, body string) ([[.Title]], error) {
+	const q = `
+		INSERT INTO [[.Table]] (user_id, title, body)
+		VALUES ($1, $2, $3)
+		RETURNING id, user_id, title, body, created_at, updated_at`
+	var n [[.Title]]
+	err := r.db.GetContext(ctx, &n, q, userID, title, body)
+	return n, err
+}
+
+func (r *sqlxRepository) GetByID(ctx context.Context, id int64) ([[.Title]], error) {
+	const q = `SELECT id, user_id, title, body, created_at, updated_at FROM [[.Table]] WHERE id = $1`
+	var n [[.Title]]
+	err := r.db.GetContext(ctx, &n, q, id)
+	return n, err // sql.ErrNoRows bubbles up; service maps it to NotFound
+}
+
+func (r *sqlxRepository) ListByUser(ctx context.Context, userID int64, limit, offset int) ([][[.Title]], error) {
+	const q = `
+		SELECT id, user_id, title, body, created_at, updated_at
+		FROM [[.Table]]
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`
+	items := [][[.Title]]{}
+	err := r.db.SelectContext(ctx, &items, q, userID, limit, offset)
+	return items, err
+}
+
+func (r *sqlxRepository) CountByUser(ctx context.Context, userID int64) (int, error) {
+	const q = `SELECT count(*) FROM [[.Table]] WHERE user_id = $1`
+	var n int
+	err := r.db.GetContext(ctx, &n, q, userID)
+	return n, err
+}
+
+func (r *sqlxRepository) Update(ctx context.Context, id int64, title, body string) ([[.Title]], error) {
+	const q = `
+		UPDATE [[.Table]] SET title = $2, body = $3, updated_at = now()
+		WHERE id = $1
+		RETURNING id, user_id, title, body, created_at, updated_at`
+	var n [[.Title]]
+	err := r.db.GetContext(ctx, &n, q, id, title, body)
+	return n, err
+}
+
+func (r *sqlxRepository) Delete(ctx context.Context, id int64) error {
+	const q = `DELETE FROM [[.Table]] WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, q, id)
+	return err
+}

@@ -1,0 +1,96 @@
+package note
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+
+	"[[.ModulePath]]/internal/platform/apperr"
+)
+
+// Service holds note business logic, including ownership enforcement. It depends on
+// the Repository interface, so it's unit-testable with a mock.
+type Service struct {
+	repo Repository
+}
+
+// NewService wires the service.
+func NewService(repo Repository) *Service {
+	return &Service{repo: repo}
+}
+
+// Create makes a new note owned by userID.
+func (s *Service) Create(ctx context.Context, userID int64, title, body string) (Note, error) {
+	n, err := s.repo.Create(ctx, userID, title, body)
+	if err != nil {
+		return Note{}, apperr.Internal("could not create note", err)
+	}
+	return n, nil
+}
+
+// Get returns a note the user owns. A note owned by someone else is reported as
+// NotFound (not Forbidden) so we don't reveal that the id exists.
+func (s *Service) Get(ctx context.Context, userID, id int64) (Note, error) {
+	return s.ownedNote(ctx, userID, id)
+}
+
+// List returns a page of the user's notes plus pagination metadata.
+func (s *Service) List(ctx context.Context, userID int64, params PageParams) (Page, error) {
+	params = params.Normalize()
+
+	total, err := s.repo.CountByUser(ctx, userID)
+	if err != nil {
+		return Page{}, apperr.Internal("could not count notes", err)
+	}
+	items, err := s.repo.ListByUser(ctx, userID, params.Limit(), params.Offset())
+	if err != nil {
+		return Page{}, apperr.Internal("could not list notes", err)
+	}
+	return Page{
+		Items:   items,
+		Page:    params.Page,
+		Size:    params.Size,
+		Total:   total,
+		HasNext: params.Offset()+len(items) < total,
+		HasPrev: params.Page > 1,
+	}, nil
+}
+
+// Update changes a note the user owns.
+func (s *Service) Update(ctx context.Context, userID, id int64, title, body string) (Note, error) {
+	if _, err := s.ownedNote(ctx, userID, id); err != nil {
+		return Note{}, err
+	}
+	n, err := s.repo.Update(ctx, id, title, body)
+	if err != nil {
+		return Note{}, apperr.Internal("could not update note", err)
+	}
+	return n, nil
+}
+
+// Delete removes a note the user owns.
+func (s *Service) Delete(ctx context.Context, userID, id int64) error {
+	if _, err := s.ownedNote(ctx, userID, id); err != nil {
+		return err
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return apperr.Internal("could not delete note", err)
+	}
+	return nil
+}
+
+// ownedNote loads a note and verifies ownership, centralizing the not-found / not-
+// yours logic so every mutating method enforces it identically.
+func (s *Service) ownedNote(ctx context.Context, userID, id int64) (Note, error) {
+	n, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Note{}, apperr.NotFound("note not found")
+		}
+		return Note{}, apperr.Internal("could not load note", err)
+	}
+	if n.UserID != userID {
+		return Note{}, apperr.NotFound("note not found")
+	}
+	return n, nil
+}
