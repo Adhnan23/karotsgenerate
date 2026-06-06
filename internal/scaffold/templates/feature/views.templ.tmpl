@@ -27,22 +27,22 @@ templ Create[[.Title]]Form(csrf string) {
 		hx-post="/[[.Table]]"
 		hx-target="#[[.Lower]]-list"
 		hx-swap="afterbegin"
-		hx-on::after-request="if(event.detail.successful) { this.reset(); this.dispatchEvent(new Event('reset-counter')); }"
+		hx-on::after-request="if(event.detail.successful) { this.reset(); }"
 	>
 		<input type="hidden" name="_csrf" value={ csrf }/>
-		<input type="text" name="title" placeholder="Title" maxlength="200" required/>
-		<!-- Alpine handles the purely-local character counter; the server never needs
-		     to know about it. htmx handles the actual submit/swap. -->
-		<div x-data="{ count: 0 }" x-on:reset-counter="count = 0">
-			<textarea
-				name="body"
-				placeholder="Write something…"
-				rows="3"
-				maxlength="10000"
-				x-on:input="count = $event.target.value.length"
-			></textarea>
-			<p class="counter"><span x-text="count"></span> / 10000</p>
-		</div>
+		[[- range .Fields]]
+		[[- if .IsText]]
+		<textarea name="[[.Column]]" placeholder="[[.GoName]]" rows="3"></textarea>
+		[[- else if .IsBool]]
+		<label class="checkbox"><input type="checkbox" name="[[.Column]]" value="true"/> [[.GoName]]</label>
+		[[- else if .IsNumber]]
+		<input type="number"[[if eq .GoType "float64"]] step="0.01"[[end]] name="[[.Column]]" placeholder="[[.GoName]]"/>
+		[[- else if .IsDateTime]]
+		<input type="datetime-local" name="[[.Column]]"/>
+		[[- else]]
+		<input type="text" name="[[.Column]]" placeholder="[[.GoName]]"/>
+		[[- end]]
+		[[- end]]
 		<button type="submit">Add</button>
 	</form>
 }
@@ -63,10 +63,9 @@ templ [[.Title]]List(items [][[.Title]]) {
 // HTML with the server's empty response, removing it from the DOM.
 templ [[.Title]]Item(n [[.Title]]) {
 	<article class="[[.Lower]]" id={ fmt.Sprintf("[[.Lower]]-%d", n.ID) }>
-		<h3>{ n.Title }</h3>
-		if n.Body != "" {
-			<p>{ n.Body }</p>
-		}
+		[[- range .Fields]]
+		<p><strong>[[.GoName]]:</strong> { fmt.Sprintf("%v", n.[[.GoName]]) }</p>
+		[[- end]]
 		<footer>
 			<time>{ n.CreatedAt.Format("2006-01-02 15:04") }</time>
 			<button

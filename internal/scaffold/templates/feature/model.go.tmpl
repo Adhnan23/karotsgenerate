@@ -4,10 +4,11 @@ import "time"
 
 // [[.Title]] is the domain/DB representation of a user's [[.Lower]].
 type [[.Title]] struct {
-	ID        int64     `db:"id"`
-	UserID    int64     `db:"user_id"`
-	Title     string    `db:"title"`
-	Body      string    `db:"body"`
+	ID     int64 `db:"id"`
+	UserID int64 `db:"user_id"`
+[[- range .Fields]]
+	[[.GoName]] [[.GoType]] `db:"[[.Column]]"`
+[[- end]]
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -16,23 +17,26 @@ type [[.Title]] struct {
 
 // Create[[.Title]]Request is the body for creating a [[.Lower]].
 type Create[[.Title]]Request struct {
-	Title string `json:"title" form:"title" validate:"required,max=200"`
-	Body  string `json:"body" form:"body" validate:"max=10000"`
+[[- range .Fields]]
+	[[.GoName]] [[.GoType]] `json:"[[.Column]]" form:"[[.Column]]"[[if .Validate]] validate:"[[.Validate]]"[[end]]`
+[[- end]]
 }
 
 // Update[[.Title]]Request is the body for updating a [[.Lower]].
 type Update[[.Title]]Request struct {
-	Title string `json:"title" form:"title" validate:"required,max=200"`
-	Body  string `json:"body" form:"body" validate:"max=10000"`
+[[- range .Fields]]
+	[[.GoName]] [[.GoType]] `json:"[[.Column]]" form:"[[.Column]]"[[if .Validate]] validate:"[[.Validate]]"[[end]]`
+[[- end]]
 }
 
 // --- Response DTOs ---
 
 // [[.Title]]Response is the public JSON view of a [[.Lower]].
 type [[.Title]]Response struct {
-	ID        int64     `json:"id"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body"`
+	ID int64 `json:"id"`
+[[- range .Fields]]
+	[[.GoName]] [[.GoType]] `json:"[[.Column]]"`
+[[- end]]
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -40,8 +44,12 @@ type [[.Title]]Response struct {
 // ToResponse converts a [[.Title]] to its public representation.
 func (n [[.Title]]) ToResponse() [[.Title]]Response {
 	return [[.Title]]Response{
-		ID: n.ID, Title: n.Title, Body: n.Body,
-		CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt,
+		ID: n.ID,
+[[- range .Fields]]
+		[[.GoName]]: n.[[.GoName]],
+[[- end]]
+		CreatedAt: n.CreatedAt,
+		UpdatedAt: n.UpdatedAt,
 	}
 }
 

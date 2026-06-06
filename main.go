@@ -37,6 +37,12 @@ func run(args []string) error {
 		return cmdNew(args[1:])
 	case "add":
 		return cmdAdd(args[1:])
+	case "remove", "rm":
+		return cmdRemove(args[1:])
+	case "list", "ls":
+		return cmdList(args[1:])
+	case "doctor":
+		return cmdDoctor(args[1:])
 	case "version", "-v", "--version":
 		fmt.Println("karotsgenerate", version)
 		return nil
@@ -53,16 +59,22 @@ func usage() {
 	fmt.Print(`karotsgenerate — fullstack Go project & feature scaffolder
 
 Commands:
-  new                    Scaffold a new project (interactive, or pass -yes + flags)
-  add feature <name>     Add a vertical-slice feature to the current project
-  version                Print the version
-  help                   Show this help
+  new                       Scaffold a new project (interactive, or pass -yes + flags)
+  add feature <name>        Add a vertical-slice feature to the current project
+  remove feature <name>     Remove a feature: delete its files + migration, un-wire app.go
+  list feature              List the project's features and their mount status
+  doctor                    Check that the required tools are installed
+  version                   Print the version
+  help                      Show this help
 
 Examples:
   karotsgenerate new
   karotsgenerate new -yes -module github.com/you/app -dir ./app
   karotsgenerate add feature invoice
+  karotsgenerate add feature product -fields "name:string,price:decimal,in_stock:bool"
   karotsgenerate add feature comment -no-api
+  karotsgenerate list feature
+  karotsgenerate remove feature product
 
 Run "karotsgenerate new -h" or "karotsgenerate add feature -h" for flags.
 `)

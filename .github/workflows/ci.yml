@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build & vet
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Unit + golden tests
+        run: go test ./...
+
+      - name: End-to-end smoke (generate a project, codegen, build it)
+        run: |
+          go install github.com/a-h/templ/cmd/templ@latest
+          go install github.com/swaggo/swag/cmd/swag@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          go build -o /tmp/karotsgenerate .
+          /tmp/karotsgenerate new -yes -module github.com/smoke/app -dir /tmp/smoke
+          /tmp/karotsgenerate add feature product \
+            -fields "name:string,price:decimal,in_stock:bool" -dir /tmp/smoke
+          cd /tmp/smoke
+          templ generate
+          go build ./...
+          go vet ./...

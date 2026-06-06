@@ -28,6 +28,7 @@ func cmdNew(args []string) error {
 
 	yes := fs.Bool("yes", false, "skip the interactive form; use flags and defaults")
 	force := fs.Bool("force", false, "allow generating into a non-empty directory")
+	dryRun := fs.Bool("dry-run", false, "render the project and report the file count, write nothing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -37,8 +38,14 @@ func cmdNew(args []string) error {
 		return err
 	}
 
-	if err := scaffold.GenerateProject(answers, *force); err != nil {
+	count, err := scaffold.GenerateProject(answers, *force, *dryRun)
+	if err != nil {
 		return err
+	}
+
+	if *dryRun {
+		fmt.Printf("\n[dry run] would generate %d files into %s (nothing written)\n", count, answers.TargetDir)
+		return nil
 	}
 
 	fmt.Printf(`

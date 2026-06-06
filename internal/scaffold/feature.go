@@ -15,7 +15,8 @@ const featureRoot = "templates/feature"
 
 // AddResult reports what AddFeature created.
 type AddResult struct {
-	Files []string // paths written, relative to the project root
+	Files  []string // paths written, relative to the project root
+	DryRun bool     // when true, nothing was actually written
 }
 
 // FilesList renders the created files as an indented bullet list for CLI output.
@@ -42,7 +43,10 @@ func AddFeature(opts FeatureOptions) (AddResult, error) {
 	if err != nil {
 		return res, err
 	}
-	fd := newFeatureData(modulePath, opts)
+	fd, err := newFeatureData(modulePath, opts)
+	if err != nil {
+		return res, err
+	}
 
 	featureDir := filepath.Join(opts.ProjectDir, "internal", "features", fd.Lower)
 	if _, err := os.Stat(featureDir); err == nil {
@@ -74,25 +78,30 @@ func AddFeature(opts FeatureOptions) (AddResult, error) {
 			return err
 		}
 		dest := filepath.Join(featureDir, base)
+		res.Files = append(res.Files, relTo(opts.ProjectDir, dest))
+		if opts.DryRun {
+			return nil
+		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(dest, rendered, 0o644); err != nil {
-			return err
-		}
-		res.Files = append(res.Files, relTo(opts.ProjectDir, dest))
-		return nil
+		return os.WriteFile(dest, rendered, 0o644)
 	})
 	if err != nil {
 		return res, err
 	}
 
 	// Migration with the next sequence number.
-	migPath, err := writeMigration(opts.ProjectDir, fd)
+	migPath, err := writeMigration(opts.ProjectDir, fd, opts.DryRun)
 	if err != nil {
 		return res, err
 	}
 	res.Files = append(res.Files, relTo(opts.ProjectDir, migPath))
+
+	if opts.DryRun {
+		res.DryRun = true
+		return res, nil
+	}
 
 	// Wire into app.go.
 	appGo := filepath.Join(opts.ProjectDir, "internal", "app", "app.go")
@@ -125,8 +134,9 @@ func readModulePath(projectDir string) (string, error) {
 var migrationSeq = regexp.MustCompile(`^(\d+)_`)
 
 // writeMigration renders the migration template into migrations/NNNN_create_<table>.sql,
-// choosing NNNN as one past the highest existing numbered migration.
-func writeMigration(projectDir string, fd FeatureData) (string, error) {
+// choosing NNNN as one past the highest existing numbered migration. With dryRun set it
+// computes and returns the destination path without writing.
+func writeMigration(projectDir string, fd FeatureData, dryRun bool) (string, error) {
 	migDir := filepath.Join(projectDir, "migrations")
 	entries, err := os.ReadDir(migDir)
 	if err != nil {
@@ -141,6 +151,7 @@ func writeMigration(projectDir string, fd FeatureData) (string, error) {
 		}
 	}
 	name := fmt.Sprintf("%04d_create_%s.sql", max+1, fd.Table)
+	dest := filepath.Join(migDir, name)
 
 	content, err := templatesFS.ReadFile(featureRoot + "/migration.sql.tmpl")
 	if err != nil {
@@ -150,7 +161,9 @@ func writeMigration(projectDir string, fd FeatureData) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dest := filepath.Join(migDir, name)
+	if dryRun {
+		return dest, nil
+	}
 	if err := os.WriteFile(dest, rendered, 0o644); err != nil {
 		return "", err
 	}

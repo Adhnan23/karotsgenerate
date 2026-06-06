@@ -16,19 +16,23 @@ const projectRoot = "templates/project"
 // It walks the embedded project template tree, skips files excluded by the answers
 // (e.g. the note feature when IncludeNote is false), renders *.tmpl files, and copies
 // everything else verbatim. Finally it best-effort runs gofmt, seeds .env, inits git,
-// and tidies modules.
-func GenerateProject(a Answers, force bool) error {
+// and runs codegen. With dryRun set it renders everything (to surface template errors)
+// and reports the file count without writing or running post-gen steps.
+func GenerateProject(a Answers, force, dryRun bool) (int, error) {
 	if a.ModulePath == "" {
-		return errors.New("module path is required")
+		return 0, errors.New("module path is required")
 	}
 	if a.TargetDir == "" {
-		return errors.New("target directory is required")
+		return 0, errors.New("target directory is required")
 	}
 
-	if err := ensureWritableDir(a.TargetDir, force); err != nil {
-		return err
+	if !dryRun {
+		if err := ensureWritableDir(a.TargetDir, force); err != nil {
+			return 0, err
+		}
 	}
 
+	count := 0
 	err := fs.WalkDir(templatesFS, projectRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -53,6 +57,10 @@ func GenerateProject(a Answers, force bool) error {
 				return err
 			}
 		}
+		count++
+		if dryRun {
+			return nil
+		}
 
 		dest := filepath.Join(a.TargetDir, filepath.FromSlash(destRel))
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -61,11 +69,13 @@ func GenerateProject(a Answers, force bool) error {
 		return os.WriteFile(dest, content, 0o644)
 	})
 	if err != nil {
-		return fmt.Errorf("write project: %w", err)
+		return count, fmt.Errorf("write project: %w", err)
 	}
 
-	postGenerate(a)
-	return nil
+	if !dryRun {
+		postGenerate(a)
+	}
+	return count, nil
 }
 
 // includeProjectFile applies the conditional-inclusion rules. destRel is the path

@@ -19,7 +19,9 @@ func cmdAdd(args []string) error {
 	noAPI := fs.Bool("no-api", false, "skip the JSON API handler for this feature")
 	noWeb := fs.Bool("no-web", false, "skip the htmx web handler + views for this feature")
 	table := fs.String("table", "", "DB table / route name (default: pluralized feature name)")
+	fields := fs.String("fields", "", `columns as "name:type,..." (types: string,text,int,bool,decimal,time; default: title:string,body:text)`)
 	dir := fs.String("dir", ".", "project root directory")
+	dryRun := fs.Bool("dry-run", false, "print what would be created, write nothing")
 
 	// Separate the positional <name> from flags so they can appear in any order
 	// (the stdlib flag package otherwise stops at the first positional argument).
@@ -37,13 +39,20 @@ func cmdAdd(args []string) error {
 	opts := scaffold.FeatureOptions{
 		Name:       name,
 		Table:      *table,
+		Fields:     *fields,
 		IncludeAPI: !*noAPI,
 		IncludeWeb: !*noWeb,
 		ProjectDir: *dir,
+		DryRun:     *dryRun,
 	}
 	res, err := scaffold.AddFeature(opts)
 	if err != nil {
 		return err
+	}
+
+	if res.DryRun {
+		fmt.Printf("\n[dry run] feature %q would create:\n%s  wire into internal/app/app.go\n\n(nothing written)\n", name, res.FilesList())
+		return nil
 	}
 
 	fmt.Printf(`
@@ -60,10 +69,12 @@ Next steps:
 // valueFlags are the add-feature flags that consume the following argument when
 // written in the separated form (e.g. "-table foo" rather than "-table=foo").
 var valueFlags = map[string]bool{
-	"-table": true,
-	"-dir":   true,
-	"--table": true,
-	"--dir":   true,
+	"-table":   true,
+	"-dir":     true,
+	"-fields":  true,
+	"--table":  true,
+	"--dir":    true,
+	"--fields": true,
 }
 
 // splitNameAndFlags separates the positional feature <name> from flag arguments,

@@ -20,8 +20,8 @@ func NewService(repo Repository) *Service {
 }
 
 // Create makes a new [[.Lower]] owned by userID.
-func (s *Service) Create(ctx context.Context, userID int64, title, body string) ([[.Title]], error) {
-	n, err := s.repo.Create(ctx, userID, title, body)
+func (s *Service) Create(ctx context.Context, userID int64, in Create[[.Title]]Request) ([[.Title]], error) {
+	n, err := s.repo.Create(ctx, userID, in)
 	if err != nil {
 		return [[.Title]]{}, apperr.Internal("could not create [[.Lower]]", err)
 	}
@@ -57,11 +57,11 @@ func (s *Service) List(ctx context.Context, userID int64, params PageParams) (Pa
 }
 
 // Update changes a [[.Lower]] the user owns.
-func (s *Service) Update(ctx context.Context, userID, id int64, title, body string) ([[.Title]], error) {
+func (s *Service) Update(ctx context.Context, userID, id int64, in Update[[.Title]]Request) ([[.Title]], error) {
 	if _, err := s.owned(ctx, userID, id); err != nil {
 		return [[.Title]]{}, err
 	}
-	n, err := s.repo.Update(ctx, id, title, body)
+	n, err := s.repo.Update(ctx, id, in)
 	if err != nil {
 		return [[.Title]]{}, apperr.Internal("could not update [[.Lower]]", err)
 	}

@@ -9,11 +9,11 @@ import (
 // Repository is the data-access contract. Defined as an interface so the service can
 // be unit-tested with a mock (see service_test.go in the note feature for the pattern).
 type Repository interface {
-	Create(ctx context.Context, userID int64, title, body string) ([[.Title]], error)
+	Create(ctx context.Context, userID int64, in Create[[.Title]]Request) ([[.Title]], error)
 	GetByID(ctx context.Context, id int64) ([[.Title]], error)
 	ListByUser(ctx context.Context, userID int64, limit, offset int) ([][[.Title]], error)
 	CountByUser(ctx context.Context, userID int64) (int, error)
-	Update(ctx context.Context, id int64, title, body string) ([[.Title]], error)
+	Update(ctx context.Context, id int64, in Update[[.Title]]Request) ([[.Title]], error)
 	Delete(ctx context.Context, id int64) error
 }
 
@@ -26,18 +26,18 @@ func NewRepository(db *sqlx.DB) Repository {
 	return &sqlxRepository{db: db}
 }
 
-func (r *sqlxRepository) Create(ctx context.Context, userID int64, title, body string) ([[.Title]], error) {
+func (r *sqlxRepository) Create(ctx context.Context, userID int64, in Create[[.Title]]Request) ([[.Title]], error) {
 	const q = `
-		INSERT INTO [[.Table]] (user_id, title, body)
-		VALUES ($1, $2, $3)
-		RETURNING id, user_id, title, body, created_at, updated_at`
+		INSERT INTO [[.Table]] (user_id, [[.InsertColumns]])
+		VALUES ($1, [[.InsertPlaceholders]])
+		RETURNING [[.SelectColumns]]`
 	var n [[.Title]]
-	err := r.db.GetContext(ctx, &n, q, userID, title, body)
+	err := r.db.GetContext(ctx, &n, q, userID, [[.CreateArgs]])
 	return n, err
 }
 
 func (r *sqlxRepository) GetByID(ctx context.Context, id int64) ([[.Title]], error) {
-	const q = `SELECT id, user_id, title, body, created_at, updated_at FROM [[.Table]] WHERE id = $1`
+	const q = `SELECT [[.SelectColumns]] FROM [[.Table]] WHERE id = $1`
 	var n [[.Title]]
 	err := r.db.GetContext(ctx, &n, q, id)
 	return n, err // sql.ErrNoRows bubbles up; service maps it to NotFound
@@ -45,7 +45,7 @@ func (r *sqlxRepository) GetByID(ctx context.Context, id int64) ([[.Title]], err
 
 func (r *sqlxRepository) ListByUser(ctx context.Context, userID int64, limit, offset int) ([][[.Title]], error) {
 	const q = `
-		SELECT id, user_id, title, body, created_at, updated_at
+		SELECT [[.SelectColumns]]
 		FROM [[.Table]]
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -62,13 +62,13 @@ func (r *sqlxRepository) CountByUser(ctx context.Context, userID int64) (int, er
 	return n, err
 }
 
-func (r *sqlxRepository) Update(ctx context.Context, id int64, title, body string) ([[.Title]], error) {
+func (r *sqlxRepository) Update(ctx context.Context, id int64, in Update[[.Title]]Request) ([[.Title]], error) {
 	const q = `
-		UPDATE [[.Table]] SET title = $2, body = $3, updated_at = now()
+		UPDATE [[.Table]] SET [[.UpdateAssignments]], updated_at = now()
 		WHERE id = $1
-		RETURNING id, user_id, title, body, created_at, updated_at`
+		RETURNING [[.SelectColumns]]`
 	var n [[.Title]]
-	err := r.db.GetContext(ctx, &n, q, id, title, body)
+	err := r.db.GetContext(ctx, &n, q, id, [[.CreateArgs]])
 	return n, err
 }
 

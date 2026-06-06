@@ -82,14 +82,38 @@ make generate    # render templ + swagger for the new feature
 make migrate-up  # apply the new migration (make run does it on boot too)
 ```
 
+By default a feature gets `title` (string) + `body` (text) columns. Pass `-fields` to
+define your own schema, which flows through the model, request/response DTOs (with
+validation tags), the migration columns, the repository SQL, and the templ form:
+
+```sh
+karotsgenerate add feature product \
+  -fields "name:string,price:decimal,in_stock:bool,details:text"
+```
+
+Supported field types:
+
+| type | Go | Postgres | web input |
+|------|----|----------|-----------|
+| `string` | `string` | `TEXT` (validated `max=200`) | text |
+| `text` | `string` | `TEXT` (validated `max=10000`) | textarea |
+| `int` | `int64` | `BIGINT` | number |
+| `bool` | `bool` | `BOOLEAN` | checkbox |
+| `decimal` | `float64` | `NUMERIC` | number (step 0.01) |
+| `time` | `time.Time` | `TIMESTAMPTZ` | datetime-local |
+
+`id`, `user_id`, `created_at`, `updated_at` are added automatically and may not be redefined.
+
 Flags:
 
 | Flag | Effect |
 |------|--------|
+| `-fields "name:type,..."` | columns for the feature (default: `title:string,body:text`) |
 | `-no-api` | skip the JSON API handler |
 | `-no-web` | skip the htmx web handler + views |
 | `-table name` | override the DB table / route (default: naive plural of the name) |
 | `-dir path` | project root (default `.`) |
+| `--dry-run` | print what would be created/modified, write nothing |
 
 ## How it works
 

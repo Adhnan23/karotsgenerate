@@ -44,6 +44,37 @@ func injectFeature(appGoPath, modulePath string, fd FeatureData) error {
 	return os.WriteFile(appGoPath, []byte(src), 0o644)
 }
 
+// featureWiring returns the exact import line and mount block that injectFeature writes
+// for fd, so both injection and removal share one definition.
+func featureWiring(modulePath string, fd FeatureData) (importLine, mountBlock string) {
+	importLine = fmt.Sprintf("\t%q\n", modulePath+"/internal/features/"+fd.Lower)
+	mountBlock = fmt.Sprintf(
+		"\t%sMod := %s.NewModule(logger, db, authMod.RequireAuth, authMod.RequireAuthWeb)\n"+
+			"\tsrv.Mount(%sMod)\n",
+		fd.Lower, fd.Lower, fd.Lower,
+	)
+	return importLine, mountBlock
+}
+
+// removeFeature is the inverse of injectFeature: it strips the feature's import line and
+// its construct+mount block from app.go. It reports whether anything was removed, and is
+// idempotent (a no-op if the feature was never wired).
+func removeFeature(appGoPath, modulePath string, fd FeatureData) (bool, error) {
+	raw, err := os.ReadFile(appGoPath)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", appGoPath, err)
+	}
+	src := string(raw)
+	importLine, mountBlock := featureWiring(modulePath, fd)
+
+	if !strings.Contains(src, importLine) && !strings.Contains(src, mountBlock) {
+		return false, nil
+	}
+	src = strings.Replace(src, importLine, "", 1)
+	src = strings.Replace(src, mountBlock, "", 1)
+	return true, os.WriteFile(appGoPath, []byte(src), 0o644)
+}
+
 // insertBefore inserts text immediately before the line containing marker, preserving
 // that line's leading indentation on the inserted text's first line is the caller's job.
 func insertBefore(src, marker, text string) string {
