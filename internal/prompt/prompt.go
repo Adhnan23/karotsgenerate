@@ -32,7 +32,10 @@ type Flags struct {
 	CI        bool
 }
 
-var moduleRe = regexp.MustCompile(`^[a-zA-Z0-9._~-]+(/[a-zA-Z0-9._~-]+)+$`)
+// A module path is one or more slash-separated segments. A single bare segment
+// (e.g. "karots") is allowed for local/learning projects; a domain-style path
+// (e.g. "github.com/you/app") is what you want if you'll publish it.
+var moduleRe = regexp.MustCompile(`^[a-zA-Z0-9._~-]+(/[a-zA-Z0-9._~-]+)*$`)
 
 // Collect turns flags (and, unless yes, interactive answers) into scaffold.Answers,
 // applying defaults and validating required fields.
@@ -63,35 +66,33 @@ func Collect(f Flags, yes bool) (scaffold.Answers, error) {
 	return a, nil
 }
 
-// runForm shows the interactive huh form, mutating a in place.
+// runForm shows the interactive huh form, mutating a in place. Each question is its
+// own group so huh renders them one page at a time (Enter validates the page and
+// advances to the next) instead of stacking a whole group on one screen.
 func runForm(a *scaffold.Answers) error {
+	field := func(f huh.Field) *huh.Group { return huh.NewGroup(f) }
+
 	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Go module path").
-				Description("e.g. github.com/you/app").
-				Value(&a.ModulePath).
-				Validate(validateModule),
-			huh.NewInput().
-				Title("Project name").
-				Description("blank = last segment of the module path").
-				Value(&a.ProjectName),
-			huh.NewInput().
-				Title("Target directory").
-				Description("blank = ./<project name>").
-				Value(&a.TargetDir),
-		),
-		huh.NewGroup(
-			huh.NewInput().Title("Postgres database name").Value(&a.DBName),
-			huh.NewInput().Title("Postgres host port").Value(&a.DBPort),
-			huh.NewInput().Title("HTTP server port").Value(&a.AppPort),
-		),
-		huh.NewGroup(
-			huh.NewConfirm().Title("Include the example 'note' feature?").Value(&a.IncludeNote),
-			huh.NewConfirm().Title("Include Swagger UI + OpenAPI docs?").Value(&a.IncludeSwagger),
-			huh.NewConfirm().Title("Include the app Dockerfile?").Value(&a.IncludeDocker),
-			huh.NewConfirm().Title("Include the GitHub Actions CI workflow?").Value(&a.IncludeCI),
-		),
+		field(huh.NewInput().
+			Title("Go module path").
+			Description("e.g. github.com/you/app").
+			Value(&a.ModulePath).
+			Validate(validateModule)),
+		field(huh.NewInput().
+			Title("Project name").
+			Description("blank = last segment of the module path").
+			Value(&a.ProjectName)),
+		field(huh.NewInput().
+			Title("Target directory").
+			Description("blank = ./<project name>").
+			Value(&a.TargetDir)),
+		field(huh.NewInput().Title("Postgres database name").Value(&a.DBName)),
+		field(huh.NewInput().Title("Postgres host port").Value(&a.DBPort)),
+		field(huh.NewInput().Title("HTTP server port").Value(&a.AppPort)),
+		field(huh.NewConfirm().Title("Include the example 'note' feature?").Value(&a.IncludeNote)),
+		field(huh.NewConfirm().Title("Include Swagger UI + OpenAPI docs?").Value(&a.IncludeSwagger)),
+		field(huh.NewConfirm().Title("Include the app Dockerfile?").Value(&a.IncludeDocker)),
+		field(huh.NewConfirm().Title("Include the GitHub Actions CI workflow?").Value(&a.IncludeCI)),
 	)
 	return form.Run()
 }
@@ -124,7 +125,7 @@ func validateModule(s string) error {
 		return fmt.Errorf("module path is required")
 	}
 	if !moduleRe.MatchString(s) {
-		return fmt.Errorf("module path should look like host.tld/owner/name")
+		return fmt.Errorf(`module path must be slash-separated segments, e.g. "github.com/you/app" or just "app"`)
 	}
 	return nil
 }
